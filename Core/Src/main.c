@@ -27,6 +27,7 @@
 #include <mqtt.h>
 #include <stdio.h>
 #include <string.h>
+#include "stream_buffer.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -36,6 +37,8 @@
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
+#define sbiSTREAM_BUFFER_LENGTH_BYTES		( ( size_t ) 100 )
+#define sbiSTREAM_BUFFER_TRIGGER_LEVEL_1	( ( BaseType_t ) 1 )
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -50,6 +53,12 @@ UART_HandleTypeDef huart2;
 osThreadId defaultTaskHandle;
 osThreadId uartTaskHandle;
 /* USER CODE BEGIN PV */
+
+/* UART PV */
+/* Receive data */
+uint8_t uartRxData;
+/* The stream buffer that is used to send received data from an interrupt to the task. */
+static StreamBufferHandle_t xStreamReceiveBuffer = NULL;
 
 /* USER CODE END PV */
 
@@ -66,13 +75,12 @@ void StartUartTask(void const * argument);
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
-int _write(int file, char *ptr, int len)
-{
-  /* Implement your write code here, this is used by puts and printf for example */
-  int i=0;
-  for(i=0 ; i<len ; i++)
-    ITM_SendChar((*ptr++));
-  return len;
+int _write(int file, char *ptr, int len) {
+	/* Implement your write code here, this is used by puts and printf for example */
+	int i = 0;
+	for (i = 0; i < len; i++)
+		ITM_SendChar((*ptr++));
+	return len;
 }
 /* USER CODE END 0 */
 
@@ -271,10 +279,13 @@ static void MX_GPIO_Init(void)
 /* USER CODE BEGIN 4 */
 static int inpub_id;
 
-static void mqtt_connection_cb(mqtt_client_t *client, void *arg, mqtt_connection_status_t status);
+static void mqtt_connection_cb(mqtt_client_t *client, void *arg,
+		mqtt_connection_status_t status);
 static void mqtt_sub_request_cb(void *arg, err_t result);
-static void mqtt_incoming_publish_cb(void *arg, const char *topic, u32_t tot_len);
-static void mqtt_incoming_data_cb(void *arg, const u8_t *data, u16_t len, u8_t flags);
+static void mqtt_incoming_publish_cb(void *arg, const char *topic,
+		u32_t tot_len);
+static void mqtt_incoming_data_cb(void *arg, const u8_t *data, u16_t len,
+		u8_t flags);
 static void mqtt_pub_request_cb(void *arg, err_t result);
 void test_publish(mqtt_client_t *client, void *arg);
 
@@ -299,7 +310,8 @@ void mqtt_connect(mqtt_client_t *client) {
 	 to establish a connection with the server.
 	 For now MQTT version 3.1.1 is always used */
 
-	err = mqtt_client_connect(client, &mqttServerIP, MQTT_PORT, mqtt_connection_cb, 0, &ci);
+	err = mqtt_client_connect(client, &mqttServerIP, MQTT_PORT,
+			mqtt_connection_cb, 0, &ci);
 
 	/* For now just print the result code if something goes wrong */
 	if (err != ERR_OK) {
@@ -310,100 +322,111 @@ void mqtt_connect(mqtt_client_t *client) {
 /**
  * Подключение прошло успешно.
  */
-static void mqtt_connection_cb(mqtt_client_t *client, void *arg, mqtt_connection_status_t status)
-{
-  err_t err;
-  if(status == MQTT_CONNECT_ACCEPTED) {
-    printf("mqtt_connection_cb: Successfully connected\n");
+static void mqtt_connection_cb(mqtt_client_t *client, void *arg,
+		mqtt_connection_status_t status) {
+	err_t err;
+	if (status == MQTT_CONNECT_ACCEPTED) {
+		printf("mqtt_connection_cb: Successfully connected\n");
 
-    /* Setup callback for incoming publish requests */
-    mqtt_set_inpub_callback(client, mqtt_incoming_publish_cb, mqtt_incoming_data_cb, arg);
+		/* Setup callback for incoming publish requests */
+		mqtt_set_inpub_callback(client, mqtt_incoming_publish_cb,
+				mqtt_incoming_data_cb, arg);
 
-    /* Subscribe to a topic named "subtopic" with QoS level 1, call mqtt_sub_request_cb with result */
-    err = mqtt_subscribe(client, "subtopic", 1, mqtt_sub_request_cb, arg);
+		/* Subscribe to a topic named "subtopic" with QoS level 1, call mqtt_sub_request_cb with result */
+		err = mqtt_subscribe(client, "subtopic", 1, mqtt_sub_request_cb, arg);
 
-    test_publish(client, 0);
+		test_publish(client, 0);
 
-    if(err != ERR_OK) {
-      printf("mqtt_subscribe return: %d\n", err);
-    }
-  } else {
-    printf("mqtt_connection_cb: Disconnected, reason: %d\n", status);
+		if (err != ERR_OK) {
+			printf("mqtt_subscribe return: %d\n", err);
+		}
+	} else {
+		printf("mqtt_connection_cb: Disconnected, reason: %d\n", status);
 
-    /* Its more nice to be connected, so try to reconnect */
-    mqtt_connect(client);
-  }
+		/* Its more nice to be connected, so try to reconnect */
+		mqtt_connect(client);
+	}
 }
 
-static void mqtt_sub_request_cb(void *arg, err_t result)
-{
-  /* Just print the result code here for simplicity,
-     normal behaviour would be to take some action if subscribe fails like
-     notifying user, retry subscribe or disconnect from server */
-  printf("Subscribe result: %d\n", result);
+static void mqtt_sub_request_cb(void *arg, err_t result) {
+	/* Just print the result code here for simplicity,
+	 normal behaviour would be to take some action if subscribe fails like
+	 notifying user, retry subscribe or disconnect from server */
+	printf("Subscribe result: %d\n", result);
 }
 
-static void mqtt_incoming_publish_cb(void *arg, const char *topic, u32_t tot_len)
-{
-  printf("Incoming publish at topic %s with total length %u\n", topic, (unsigned int)tot_len);
+static void mqtt_incoming_publish_cb(void *arg, const char *topic,
+		u32_t tot_len) {
+	printf("Incoming publish at topic %s with total length %u\n", topic,
+			(unsigned int) tot_len);
 
-  /* Decode topic string into a user defined reference */
-  if(strcmp(topic, "print_payload") == 0) {
-    inpub_id = 0;
-  } else if(topic[0] == 'A') {
-    /* All topics starting with 'A' might be handled at the same way */
-    inpub_id = 1;
-  } else {
-    /* For all other topics */
-    inpub_id = 2;
-  }
+	/* Decode topic string into a user defined reference */
+	if (strcmp(topic, "print_payload") == 0) {
+		inpub_id = 0;
+	} else if (topic[0] == 'A') {
+		/* All topics starting with 'A' might be handled at the same way */
+		inpub_id = 1;
+	} else {
+		/* For all other topics */
+		inpub_id = 2;
+	}
 }
 
-static void mqtt_incoming_data_cb(void *arg, const u8_t *data, u16_t len, u8_t flags)
-{
-  printf("Incoming publish payload with length %d, flags %u\n", len, (unsigned int)flags);
+static void mqtt_incoming_data_cb(void *arg, const u8_t *data, u16_t len,
+		u8_t flags) {
+	printf("Incoming publish payload with length %d, flags %u\n", len,
+			(unsigned int) flags);
 
-  if(flags & MQTT_DATA_FLAG_LAST) {
-    /* Last fragment of payload received (or whole part if payload fits receive buffer
-       See MQTT_VAR_HEADER_BUFFER_LEN)  */
+	if (flags & MQTT_DATA_FLAG_LAST) {
+		/* Last fragment of payload received (or whole part if payload fits receive buffer
+		 See MQTT_VAR_HEADER_BUFFER_LEN)  */
 
-    /* Call function or do action depending on reference, in this case inpub_id */
-    if(inpub_id == 0) {
-      /* Don't trust the publisher, check zero termination */
-      if(data[len-1] == 0) {
-        printf("mqtt_incoming_data_cb: %s\n", (const char *)data);
-      }
-    } else if(inpub_id == 1) {
-      /* Call an 'A' function... */
-    } else {
-      printf("mqtt_incoming_data_cb: Ignoring payload...\n");
-    }
-  } else {
-    /* Handle fragmented payload, store in buffer, write to file or whatever */
-  }
+		/* Call function or do action depending on reference, in this case inpub_id */
+		if (inpub_id == 0) {
+			/* Don't trust the publisher, check zero termination */
+			if (data[len - 1] == 0) {
+				printf("mqtt_incoming_data_cb: %s\n", (const char*) data);
+			}
+		} else if (inpub_id == 1) {
+			/* Call an 'A' function... */
+		} else {
+			printf("mqtt_incoming_data_cb: Ignoring payload...\n");
+		}
+	} else {
+		/* Handle fragmented payload, store in buffer, write to file or whatever */
+	}
 }
 
-
-void test_publish(mqtt_client_t *client, void *arg)
-{
-  const char *pub_payload= "PubSubHubLubJub";
-  err_t err;
-  u8_t qos = 2; /* 0 1 or 2, see MQTT specification */
-  u8_t retain = 0; /* No don't retain such crappy payload... */
-  err = mqtt_publish(client, "subtopic", pub_payload, strlen(pub_payload), qos, retain, mqtt_pub_request_cb, arg);
-  if(err != ERR_OK) {
-    printf("Publish err: %d\n", err);
-  }
+void test_publish(mqtt_client_t *client, void *arg) {
+	const char *pub_payload = "PubSubHubLubJub";
+	err_t err;
+	u8_t qos = 2; /* 0 1 or 2, see MQTT specification */
+	u8_t retain = 0; /* No don't retain such crappy payload... */
+	err = mqtt_publish(client, "subtopic", pub_payload, strlen(pub_payload),
+			qos, retain, mqtt_pub_request_cb, arg);
+	if (err != ERR_OK) {
+		printf("Publish err: %d\n", err);
+	}
 }
 
 /* Called when publish is complete either with sucess or failure */
-static void mqtt_pub_request_cb(void *arg, err_t result)
-{
-  if(result != ERR_OK) {
-    printf("Publish result: %d\n", result);
-  }
+static void mqtt_pub_request_cb(void *arg, err_t result) {
+	if (result != ERR_OK) {
+		printf("Publish result: %d\n", result);
+	}
 }
 
+/* This callback is called by the HAL_UART_IRQHandler when the given number of bytes are received */
+void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart) {
+	if (huart->Instance == USART2) {
+		/* Send the next four bytes to the stream buffer. */
+		xStreamBufferSendFromISR(xStreamReceiveBuffer, (void*) &uartRxData, 1,
+				NULL);
+
+		/* Receive one byte in interrupt mode */
+		HAL_UART_Receive_IT(&huart2, &uartRxData, 1);
+	}
+}
 /* USER CODE END 4 */
 
 /* USER CODE BEGIN Header_StartDefaultTask */
@@ -443,14 +466,18 @@ void StartUartTask(void const * argument)
 {
   /* USER CODE BEGIN StartUartTask */
 	/* Infinite loop */
+
+	xStreamReceiveBuffer = xStreamBufferCreate(sbiSTREAM_BUFFER_LENGTH_BYTES,
+			sbiSTREAM_BUFFER_TRIGGER_LEVEL_1);
+
+	// Активируем прерывание UART.
+	HAL_UART_Receive_IT(&huart2, &uartRxData, 1);
+
 	for (;;) {
-		uint8_t buffer;
-		HAL_UART_Receive(&huart2, &buffer, 1, HAL_MAX_DELAY);
-		char arrayBuffer[20];
-		sprintf(arrayBuffer, "%c", buffer);
-		printf(arrayBuffer);
-		HAL_UART_Transmit(&huart2, arrayBuffer, strlen(arrayBuffer), HAL_MAX_DELAY);
-		osDelay(1);
+		uint8_t receivedData;
+		xStreamBufferReceive(xStreamReceiveBuffer, (void*) &receivedData, 1, portMAX_DELAY);
+		HAL_UART_Transmit(&huart2, &receivedData, 1, 100);
+		//osDelay(1);
 	}
   /* USER CODE END StartUartTask */
 }
