@@ -28,17 +28,33 @@
 #include <stdio.h>
 #include <string.h>
 #include "stream_buffer.h"
+#include "queue.h"
+#include "semphr.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
 /* USER CODE BEGIN PTD */
+enum ProtocolCommand {Telemetry = 0};
 
+typedef struct {
+	char* topicName;
+	uint8_t* data;
+	uint32_t dataLenght;
+} MQTT_Protocol_t;
+
+typedef struct {
+	enum ProtocolCommand protocolCommand;
+	uint8_t* data;
+	uint32_t dataLenght;
+} Prothesis_Protocol_t;
 /* USER CODE END PTD */
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
 #define sbiSTREAM_BUFFER_LENGTH_BYTES		( ( size_t ) 100 )
 #define sbiSTREAM_BUFFER_TRIGGER_LEVEL_1	( ( BaseType_t ) 1 )
+
+#define qpeekQUEUE_LENGTH (20)
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -56,9 +72,15 @@ osThreadId uartTaskHandle;
 
 /* UART PV */
 /* Receive data */
-uint8_t uartRxData;
+static uint8_t uartRxData;
 /* The stream buffer that is used to send received data from an interrupt to the task. */
 static StreamBufferHandle_t xStreamReceiveBuffer = NULL;
+
+/* MQTT PV */
+static QueueHandle_t xQueueMQTTSendMessage = NULL;
+static QueueHandle_t xQueueMQTTReceiveMessage = NULL;
+/* Stores the handle of the task that will be notified when connect to MQTT is complete. */
+static TaskHandle_t xTaskToNotifyMqttConnect = NULL;
 
 /* USER CODE END PV */
 
@@ -332,6 +354,8 @@ static void mqtt_connection_cb(mqtt_client_t *client, void *arg,
 		mqtt_set_inpub_callback(client, mqtt_incoming_publish_cb,
 				mqtt_incoming_data_cb, arg);
 
+		xTaskNotifyGive(xTaskToNotifyMqttConnect);
+
 		/* Subscribe to a topic named "subtopic" with QoS level 1, call mqtt_sub_request_cb with result */
 		err = mqtt_subscribe(client, "subtopic", 1, mqtt_sub_request_cb, arg);
 
@@ -343,6 +367,7 @@ static void mqtt_connection_cb(mqtt_client_t *client, void *arg,
 	} else {
 		printf("mqtt_connection_cb: Disconnected, reason: %d\n", status);
 
+		xTaskNotifyStateClear(xTaskToNotifyMqttConnect);
 		/* Its more nice to be connected, so try to reconnect */
 		mqtt_connect(client);
 	}
@@ -421,7 +446,7 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart) {
 	if (huart->Instance == USART2) {
 		/* Send the next four bytes to the stream buffer. */
 		xStreamBufferSendFromISR(xStreamReceiveBuffer, (void*) &uartRxData, 1,
-				NULL);
+		NULL);
 
 		/* Receive one byte in interrupt mode */
 		HAL_UART_Receive_IT(&huart2, &uartRxData, 1);
@@ -439,17 +464,61 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart) {
 void StartDefaultTask(void const * argument)
 {
   /* init code for LWIP */
-  MX_LWIP_Init();
-  /* USER CODE BEGIN 5 */
+	MX_LWIP_Init();
+	/* USER CODE BEGIN 5 */
 
-	printf("Start MQTT\n");
+	// Initialize MQTT queue
+	xQueueMQTTSendMessage = xQueueCreate(qpeekQUEUE_LENGTH,
+			sizeof(MQTT_Protocol_t));
+	xQueueMQTTReceiveMessage = xQueueCreate(qpeekQUEUE_LENGTH,
+			sizeof(MQTT_Protocol_t));
+
+	printf("[MQTT Task] Start MQTT\n");
+	xTaskToNotifyMqttConnect = xTaskGetCurrentTaskHandle();
 	mqtt_client_t *client = mqtt_client_new();
 	if (client != NULL) {
 		mqtt_connect(client);
 	}
 
+	// Ожидаем пока MQTT клиент будет запущен
+	printf("[MQTT Task] Wait MQTT client start\n");
+	ulTaskNotifyTake(pdFALSE, portMAX_DELAY);
+	printf("[MQTT Task] Start receive MQTT data\n");
+
 	/* Infinite loop */
 	for (;;) {
+		// TODO: Добавить семафор на отправку, т.к. впустую трачу процессорное время на прокрутку в цикле, другие потоки не будут работать в это время
+		// Смотрим очередь отправки на сервер
+		if (uxQueueMessagesWaiting(xQueueMQTTSendMessage)) {
+			MQTT_Protocol_t mqttSendData;
+			if (xQueueReceive(xQueueMQTTSendMessage, &mqttSendData,
+					(TickType_t) 0) == pdPASS) {
+				char buffer[100];
+				snprintf(buffer,
+						sizeof(buffer),
+						"[MQTT Task] Required send new MQTT data (%u) on topic `%s`\n",
+						mqttSendData.dataLenght,
+						mqttSendData.topicName);
+
+				printf(buffer);
+				err_t err = mqtt_publish(client, mqttSendData.topicName, mqttSendData.data, mqttSendData.dataLenght,
+							2, 0, mqtt_pub_request_cb, 0);
+				if (err == ERR_OK) {
+					printf("[MQTT Task] Publish success\n");
+				} else {
+					printf("[MQTT Task] Publish err: %d\n", err);
+				}
+			}
+		}
+
+		// Смотрим очередь приема с сервера
+		if (uxQueueMessagesWaiting(xQueueMQTTReceiveMessage)) {
+			MQTT_Protocol_t mqttReceiveData;
+			if (xQueueReceive(xQueueMQTTSendMessage, &mqttReceiveData,
+					(TickType_t) 0) == pdPASS) {
+
+			}
+		}
 		osDelay(1);
 	}
   /* USER CODE END 5 */
@@ -462,24 +531,31 @@ void StartDefaultTask(void const * argument)
  * @retval None
  */
 /* USER CODE END Header_StartUartTask */
-void StartUartTask(void const * argument)
-{
-  /* USER CODE BEGIN StartUartTask */
+void StartUartTask(void const *argument) {
+	/* USER CODE BEGIN StartUartTask */
 	/* Infinite loop */
-
 	xStreamReceiveBuffer = xStreamBufferCreate(sbiSTREAM_BUFFER_LENGTH_BYTES,
 			sbiSTREAM_BUFFER_TRIGGER_LEVEL_1);
 
 	// Активируем прерывание UART.
 	HAL_UART_Receive_IT(&huart2, &uartRxData, 1);
+	printf("[UART Task] start UART interrupt and receive data");
 
 	for (;;) {
 		uint8_t receivedData;
-		xStreamBufferReceive(xStreamReceiveBuffer, (void*) &receivedData, 1, portMAX_DELAY);
+		xStreamBufferReceive(xStreamReceiveBuffer, (void*) &receivedData, 1,
+		portMAX_DELAY);
+
+		MQTT_Protocol_t sendData;
+		sendData.topicName = "subtopic";
+		sendData.data = &receivedData;
+		sendData.dataLenght = 1;
+		xQueueSend(xQueueMQTTSendMessage, &sendData, portMAX_DELAY);
+
 		HAL_UART_Transmit(&huart2, &receivedData, 1, 100);
-		//osDelay(1);
+		osDelay(1);
 	}
-  /* USER CODE END StartUartTask */
+	/* USER CODE END StartUartTask */
 }
 
 /**
