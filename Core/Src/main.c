@@ -30,7 +30,7 @@
 #include "stream_buffer.h"
 #include "queue.h"
 #include "semphr.h"
-#include "list.h"
+#include "buffer.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -52,6 +52,8 @@ typedef struct {
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
+#define LOG_HEAP 1
+
 #define sbiSTREAM_BUFFER_LENGTH_BYTES		( ( size_t ) 100 )
 #define sbiSTREAM_BUFFER_TRIGGER_LEVEL_1	( ( BaseType_t ) 1 )
 
@@ -90,7 +92,8 @@ static QueueHandle_t xQueueMQTTSendMessage = NULL;
 static QueueHandle_t xQueueMQTTReceiveMessage = NULL;
 /* Stores the handle of the task that will be notified when connect to MQTT is complete. */
 static TaskHandle_t xTaskToNotifyMqttConnect = NULL;
-static list MQTTdataBuffer;
+static int lastIdTopicMQTT;
+static buffer_t* MQTTdataBuffer = NULL;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -365,10 +368,13 @@ static void mqtt_connection_cb(mqtt_client_t *client, void *arg,
 		mqtt_set_inpub_callback(client, mqtt_incoming_publish_cb,
 				mqtt_incoming_data_cb, arg);
 
+		// Оповещеняем основную таску, что клиент подключен
 		xTaskNotifyGive(xTaskToNotifyMqttConnect);
 
+		// Публикуем в брокер, что мы онлайн
 		online_publish(client, arg);
 
+		// Подписываемся на все топики, которые нужны
 		/* Subscribe to a topic named "serverData" with QoS level 1, call mqtt_sub_request_cb with result */
 		err = mqtt_subscribe(client, MQTT_SETTINGS_TOPIC, 1, mqtt_sub_request_cb, arg);
 
@@ -398,6 +404,24 @@ static void mqtt_incoming_publish_cb(void *arg, const char *topic,
 	printf("Incoming publish at topic %s with total length %u\n", topic,
 			(unsigned int) tot_len);
 
+
+	// Очищаем предыдущий буфер, если он остался (такого быть по идее не должно, только если пропало соединение)
+	if (MQTTdataBuffer != NULL) {
+		printf(
+				"Receive buffer is set for topic with id %d. Destroy receive buffer with length %d bytes\n",
+				lastIdTopicMQTT, buffer_lenght(MQTTdataBuffer));
+		buffer_destroy(MQTTdataBuffer);
+		vPortFree(MQTTdataBuffer);
+		MQTTdataBuffer = NULL;
+	}
+
+	// Создаем буффер для приема данных.
+	printf("Create new receive buffer for topic %s\n", topic);
+	MQTTdataBuffer = pvPortMalloc(sizeof(buffer_t));
+	buffer_init(MQTTdataBuffer, 0);
+	lastIdTopicMQTT = inpub_id;
+
+	// Определяем id топика для получения данных в mqtt_incoming_data_cb
 	/* Decode topic string into a user defined reference */
 	if (strcmp(topic, MQTT_SETTINGS_TOPIC) == 0) {
 		inpub_id = 0;
@@ -411,36 +435,39 @@ static void mqtt_incoming_publish_cb(void *arg, const char *topic,
 
 static void mqtt_incoming_data_cb(void *arg, const u8_t *data, u16_t len,
 		u8_t flags) {
-	printf("Incoming publish payload with length %d, flags %u\n", len,
-			(unsigned int) flags);
 
-	for (int i = 0; i < len; i++)
-	{
-		list_append(&MQTTdataBuffer, &(data[i]));
-	}
+	configASSERT(MQTTdataBuffer != NULL);
+
+	buffer_array_add(MQTTdataBuffer, (uint8_t*) data, len);
+
+#if( LOG_HEAP == 1 )
+	// Log свободного места в куче после приема данных
+	printf("[MQTT Heap] Receive bytes %d\n", len);
+	printf("[MQTT Heap] FreeHeap %d\n", xPortGetFreeHeapSize());
+	printf("[MQTT Heap] MinimumEver %d\n", xPortGetMinimumEverFreeHeapSize());
+#endif /* LOG_HEAP */
 
 	if (flags & MQTT_DATA_FLAG_LAST) {
 		/* Last fragment of payload received (or whole part if payload fits receive buffer
 		 See MQTT_VAR_HEADER_BUFFER_LEN)  */
 
+		printf("Incoming publish payload with length %d, flags %u\n", len,
+				(unsigned int) flags);
+
 		/* Call function or do action depending on reference, in this case inpub_id */
 		if (inpub_id == 0) {
 			/* Don't trust the publisher, check zero termination */
-			int size = list_size(&MQTTdataBuffer);
-			uint8_t* payload = (uint8_t*)malloc(size);
-			for (int i = 0; i < size; i++)
-			{
-				payload[i] = *((uint8_t*)(list_get(&MQTTdataBuffer, i)->data));
-			}
+			int size = buffer_lenght(MQTTdataBuffer);
+			uint8_t *payload = MQTTdataBuffer->data;
+			MQTTdataBuffer->data = NULL;
+			vPortFree(MQTTdataBuffer);
+			MQTTdataBuffer = NULL;
 
 			MQTT_Protocol_t sendData;
 			sendData.topicName = "subtopic";
 			sendData.data = payload;
 			sendData.dataLenght = size;
 			xQueueSend(xQueueMQTTReceiveMessage, &sendData, 0);
-
-			list_destroy(&MQTTdataBuffer);
-			list_new(&MQTTdataBuffer, sizeof(uint8_t), NULL);
 		} else {
 			printf("mqtt_incoming_data_cb: Ignoring payload...\n");
 		}
@@ -488,7 +515,7 @@ void StartProtocolParserTask(void *pvParameters) {
 		xStreamBufferReceive(xStreamReceiveBuffer, (void*) &receivedData, 1,
 		portMAX_DELAY);
 
-		uint8_t* data = malloc(sizeof(uint8_t));
+		uint8_t* data = pvPortMalloc(sizeof(uint8_t));
 		data[0] = receivedData;
 		Prothesis_Protocol_t prothesisSendData;
 		prothesisSendData.protocolCommand = Telemetry;
@@ -517,8 +544,8 @@ void StartProtocolParserTask(void *pvParameters) {
 void StartDefaultTask(void const * argument)
 {
   /* init code for LWIP */
-	MX_LWIP_Init();
-	/* USER CODE BEGIN 5 */
+  MX_LWIP_Init();
+  /* USER CODE BEGIN 5 */
 
 	// Initialize MQTT queue
 	xQueueMQTTSendMessage = xQueueCreate(qpeekQUEUE_LENGTH,
@@ -527,7 +554,6 @@ void StartDefaultTask(void const * argument)
 			sizeof(MQTT_Protocol_t));
 
 	printf("[MQTT Task] Start MQTT\n");
-	list_new(&MQTTdataBuffer, sizeof(uint8_t), NULL);
 	xTaskToNotifyMqttConnect = xTaskGetCurrentTaskHandle();
 	mqtt_client_t *client = mqtt_client_new();
 	if (client != NULL) {
@@ -547,22 +573,22 @@ void StartDefaultTask(void const * argument)
 			MQTT_Protocol_t mqttSendData;
 			if (xQueueReceive(xQueueMQTTSendMessage, &mqttSendData,
 					(TickType_t) 0) == pdPASS) {
-				char buffer[100];
-				snprintf(buffer,
-						sizeof(buffer),
+
+				printf(
 						"[MQTT Task] Required send new MQTT data (%u bytes) on topic `%s`\n",
-						(unsigned int)mqttSendData.dataLenght,
+						(unsigned int) mqttSendData.dataLenght,
 						mqttSendData.topicName);
-				printf(buffer);
-				err_t err = mqtt_publish(client, mqttSendData.topicName, mqttSendData.data, mqttSendData.dataLenght,
-							2, 0, mqtt_pub_request_cb, 0);
+
+				err_t err = mqtt_publish(client, mqttSendData.topicName,
+						mqttSendData.data, mqttSendData.dataLenght, 2, 0,
+						mqtt_pub_request_cb, 0);
 				if (err == ERR_OK) {
 					printf("[MQTT Task] Publish success\n");
 				} else {
 					printf("[MQTT Task] Publish err: %d\n", err);
 				}
 
-				free(mqttSendData.data);
+				vPortFree(mqttSendData.data);
 			}
 		}
 
@@ -572,12 +598,14 @@ void StartDefaultTask(void const * argument)
 			if (xQueueReceive(xQueueMQTTReceiveMessage, &mqttReceiveData,
 					(TickType_t) 0) == pdPASS) {
 
-				printf("[MQTT Task] Receive new data from topic %s with length: %u", mqttReceiveData.topicName, (unsigned int)mqttReceiveData.dataLenght);
+				printf(
+						"[MQTT Task] Receive new data from topic %s with length: %u\n",
+						mqttReceiveData.topicName,
+						(unsigned int) mqttReceiveData.dataLenght);
 
 				Prothesis_Protocol_t prothesisSendData;
 
-				if (strcmp(mqttReceiveData.topicName, "subtopic") == 0)
-				{
+				if (strcmp(mqttReceiveData.topicName, "subtopic") == 0) {
 					prothesisSendData.protocolCommand = Telemetry;
 				}
 
@@ -585,7 +613,8 @@ void StartDefaultTask(void const * argument)
 
 				prothesisSendData.data = mqttReceiveData.data;
 				prothesisSendData.dataLenght = mqttReceiveData.dataLenght;
-				xQueueSend(xQueueUARTSendMessage, &prothesisSendData, portMAX_DELAY);
+				xQueueSend(xQueueUARTSendMessage, &prothesisSendData,
+						portMAX_DELAY);
 			}
 		}
 		osDelay(50);
@@ -600,8 +629,9 @@ void StartDefaultTask(void const * argument)
  * @retval None
  */
 /* USER CODE END Header_StartUartTask */
-void StartUartTask(void const *argument) {
-	/* USER CODE BEGIN StartUartTask */
+void StartUartTask(void const * argument)
+{
+  /* USER CODE BEGIN StartUartTask */
 	/* Infinite loop */
 	// Создаем стрим для UART
 	xStreamReceiveBuffer = xStreamBufferCreate(sbiSTREAM_BUFFER_LENGTH_BYTES,
@@ -644,7 +674,7 @@ void StartUartTask(void const *argument) {
 						(unsigned int)sendData.dataLenght, sendData.protocolCommand);
 
 				HAL_UART_Transmit(&huart2, sendData.data, sendData.dataLenght, 1000);
-				free(sendData.data);
+				vPortFree(sendData.data);
 			}
 		}
 
@@ -678,7 +708,7 @@ void StartUartTask(void const *argument) {
 
 		osDelay(100);
 	}
-	/* USER CODE END StartUartTask */
+  /* USER CODE END StartUartTask */
 }
 
 /**
