@@ -52,7 +52,7 @@ typedef struct {
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-#define LOG_HEAP 1
+#define LOG_HEAP 0
 
 #define sbiSTREAM_BUFFER_LENGTH_BYTES		( ( size_t ) 100 )
 #define sbiSTREAM_BUFFER_TRIGGER_LEVEL_1	( ( BaseType_t ) 1 )
@@ -86,12 +86,16 @@ static uint8_t uartRxData;
 static StreamBufferHandle_t xStreamReceiveBuffer = NULL;
 static QueueHandle_t xQueueUARTSendMessage = NULL;
 static QueueHandle_t xQueueUARTReceiveMessage = NULL;
+/* Stores the handle of the task that will be notified when UART receives data or receives a request to send data. */
+static TaskHandle_t xTaskToNotifyUartSendAndReceive = NULL;
 
 /* === MQTT PV === */
 static QueueHandle_t xQueueMQTTSendMessage = NULL;
 static QueueHandle_t xQueueMQTTReceiveMessage = NULL;
 /* Stores the handle of the task that will be notified when connect to MQTT is complete. */
 static TaskHandle_t xTaskToNotifyMqttConnect = NULL;
+/* Stores the handle of the task that will be notified when MQTT receives data or receives a request to send data. */
+static TaskHandle_t xTaskToNotifyMqttSendAndReceive = NULL;
 static int lastIdTopicMQTT;
 static buffer_t* MQTTdataBuffer = NULL;
 /* USER CODE END PV */
@@ -327,6 +331,8 @@ void mqtt_connect(mqtt_client_t *client) {
 	struct mqtt_connect_client_info_t ci;
 	err_t err;
 
+	printf("mqtt_connect: start try to connect to 192.168.0.3:1883\n");
+
 	/* Setup an empty client info structure */
 	memset(&ci, 0, sizeof(ci));
 
@@ -381,7 +387,7 @@ static void mqtt_connection_cb(mqtt_client_t *client, void *arg,
 		//test_publish(client, 0);
 
 		if (err != ERR_OK) {
-			printf("mqtt_subscribe return: %d\n", err);
+			printf("mqtt_connection_cb: mqtt_subscribe return: %d\n", err);
 		}
 	} else {
 		printf("mqtt_connection_cb: Disconnected, reason: %d\n", status);
@@ -396,7 +402,7 @@ static void mqtt_sub_request_cb(void *arg, err_t result) {
 	/* Just print the result code here for simplicity,
 	 normal behaviour would be to take some action if subscribe fails like
 	 notifying user, retry subscribe or disconnect from server */
-	printf("Subscribe result: %d\n", result);
+	printf("mqtt_sub_request_cb: subscribe result is %d\n", result);
 }
 
 static void mqtt_incoming_publish_cb(void *arg, const char *topic,
@@ -468,6 +474,9 @@ static void mqtt_incoming_data_cb(void *arg, const u8_t *data, u16_t len,
 			sendData.data = payload;
 			sendData.dataLenght = size;
 			xQueueSend(xQueueMQTTReceiveMessage, &sendData, 0);
+
+			// Оповещаем MQTT таску, что пришли новые данные.
+			xTaskNotifyGive(xTaskToNotifyMqttSendAndReceive);
 		} else {
 			printf("mqtt_incoming_data_cb: Ignoring payload...\n");
 		}
@@ -515,6 +524,7 @@ void StartProtocolParserTask(void *pvParameters) {
 		xStreamBufferReceive(xStreamReceiveBuffer, (void*) &receivedData, 1,
 		portMAX_DELAY);
 
+		// Формируем пакет с данными
 		uint8_t* data = pvPortMalloc(sizeof(uint8_t));
 		data[0] = receivedData;
 		Prothesis_Protocol_t prothesisSendData;
@@ -522,6 +532,9 @@ void StartProtocolParserTask(void *pvParameters) {
 		prothesisSendData.data = data;
 		prothesisSendData.dataLenght = 1;
 		xQueueSend(xQueueUARTReceiveMessage, &prothesisSendData, portMAX_DELAY);
+
+		// Оповещаем UART таску, что пришла новая команда.
+		xTaskNotifyGive(xTaskToNotifyUartSendAndReceive);
 	}
 
 	/* Tasks must not attempt to return from their implementing
@@ -555,6 +568,7 @@ void StartDefaultTask(void const * argument)
 
 	printf("[MQTT Task] Start MQTT\n");
 	xTaskToNotifyMqttConnect = xTaskGetCurrentTaskHandle();
+	xTaskToNotifyMqttSendAndReceive = xTaskGetCurrentTaskHandle();
 	mqtt_client_t *client = mqtt_client_new();
 	if (client != NULL) {
 		mqtt_connect(client);
@@ -562,12 +576,15 @@ void StartDefaultTask(void const * argument)
 
 	// Ожидаем пока MQTT клиент будет запущен
 	printf("[MQTT Task] Wait MQTT client start\n");
-	ulTaskNotifyTake(pdFALSE, portMAX_DELAY);
+	ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
 	printf("[MQTT Task] Start receive MQTT data\n");
 
 	/* Infinite loop */
 	for (;;) {
-		// TODO: Добавить семафор на отправку, т.к. впустую трачу процессорное время на прокрутку в цикле, другие потоки не будут работать в это время
+
+		ulTaskNotifyTake(pdFALSE, portMAX_DELAY);
+		printf("[MQTT Task] start handle notification\n");
+
 		// Смотрим очередь отправки на сервер
 		if (uxQueueMessagesWaiting(xQueueMQTTSendMessage)) {
 			MQTT_Protocol_t mqttSendData;
@@ -603,6 +620,7 @@ void StartDefaultTask(void const * argument)
 						mqttReceiveData.topicName,
 						(unsigned int) mqttReceiveData.dataLenght);
 
+				// Формируем пакет данных для отправки по UART
 				Prothesis_Protocol_t prothesisSendData;
 
 				if (strcmp(mqttReceiveData.topicName, "subtopic") == 0) {
@@ -615,9 +633,11 @@ void StartDefaultTask(void const * argument)
 				prothesisSendData.dataLenght = mqttReceiveData.dataLenght;
 				xQueueSend(xQueueUARTSendMessage, &prothesisSendData,
 						portMAX_DELAY);
+
+				// Оповещаем UART таску, что данные готовы.
+				xTaskNotifyGive(xTaskToNotifyUartSendAndReceive);
 			}
 		}
-		osDelay(50);
 	}
   /* USER CODE END 5 */
 }
@@ -645,6 +665,8 @@ void StartUartTask(void const * argument)
 					sizeof(Prothesis_Protocol_t));
 
 
+	xTaskToNotifyUartSendAndReceive = xTaskGetCurrentTaskHandle();
+
 	// Создаем таску для парсинга протокола
 	BaseType_t xReturned;
 	TaskHandle_t xHandle = NULL;
@@ -663,7 +685,9 @@ void StartUartTask(void const * argument)
 	printf("[UART Task] start UART interrupt and receive data\n");
 
 	for (;;) {
-		// TODO: Добавить семафор на отправку, т.к. впустую трачу процессорное время на прокрутку в цикле, другие потоки не будут работать в это время
+		ulTaskNotifyTake(pdFALSE, portMAX_DELAY);
+		printf("[UART Task] start handle notification\n");
+
 		// Смотрим очередь отправки на протез
 		if (uxQueueMessagesWaiting(xQueueUARTSendMessage)) {
 			Prothesis_Protocol_t sendData;
@@ -678,7 +702,7 @@ void StartUartTask(void const * argument)
 			}
 		}
 
-		// Смотрим очередь приема с сервера
+		// Смотрим очередь приема с протеза
 		if (uxQueueMessagesWaiting(xQueueUARTReceiveMessage)) {
 			Prothesis_Protocol_t sendData;
 			if (xQueueReceive(xQueueUARTReceiveMessage, &sendData,
@@ -703,10 +727,11 @@ void StartUartTask(void const * argument)
 				mqttSendData.data = sendData.data;
 				mqttSendData.dataLenght = sendData.dataLenght;
 				xQueueSend(xQueueMQTTSendMessage, &mqttSendData, portMAX_DELAY);
+
+				// Оповещаем MQTT таску, что данные готовы.
+				xTaskNotifyGive(xTaskToNotifyMqttSendAndReceive);
 			}
 		}
-
-		osDelay(100);
 	}
   /* USER CODE END StartUartTask */
 }
