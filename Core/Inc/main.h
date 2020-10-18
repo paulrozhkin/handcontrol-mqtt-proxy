@@ -58,6 +58,7 @@ void Error_Handler(void);
 /* USER CODE END EFP */
 
 /* Private defines -----------------------------------------------------------*/
+#define MQTT_OUTPUT_RINGBUF_SIZE 57344
 /* USER CODE BEGIN Private defines */
 
 /* USER CODE END Private defines */

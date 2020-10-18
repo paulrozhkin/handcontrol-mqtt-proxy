@@ -761,8 +761,8 @@ void StartUartTask(void const * argument)
 				}
 				configASSERT(mqttSendData.topicName);
 
-				mqttSendData.data = sendData.data;
-				mqttSendData.dataLenght = sendData.dataLenght;
+				mqttSendData.data = (uint8_t*)pvPortMalloc(32000);
+				mqttSendData.dataLenght = 32000;
 				xQueueSend(xQueueMQTTSendMessage, &mqttSendData, portMAX_DELAY);
 
 				// Оповещаем MQTT таску, что данные готовы.
