@@ -30,15 +30,14 @@
 #include "stream_buffer.h"
 #include "queue.h"
 #include "semphr.h"
-#include "buffer.h"
 #include "timers.h"
+
+#include "buffer.h"
+#include "protocol_parser.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
 /* USER CODE BEGIN PTD */
-enum ProtocolCommand {
-	Empty = 0, Telemetry = 1
-};
 
 typedef struct {
 	char *topicName;
@@ -46,11 +45,6 @@ typedef struct {
 	uint32_t dataLenght;
 } MQTT_Protocol_t;
 
-typedef struct {
-	enum ProtocolCommand protocolCommand;
-	uint8_t *data;
-	uint32_t dataLenght;
-} Prothesis_Protocol_t;
 /* USER CODE END PTD */
 
 /* Private define ------------------------------------------------------------*/
@@ -65,10 +59,27 @@ typedef struct {
 // MQTT_ONLINE_PUBLISH_PERIOD для отправки ID клиента в топик MQTT_ONLINE_TOPIC
 #define MQTT_ONLINE_PUBLISH_PERIOD_MS	60000
 #define MQTT_CLIENT_ID 					"f2c8eb77-ea6e-4411-bf14-b8a564d17a97"
+
+// Online/Offline
 #define MQTT_ONLINE_TOPIC 				"controllers/online"
 #define MQTT_OFFLINE_TOPIC				"controllers/offline"
-#define MQTT_TELEMETRY_TOPIC 			MQTT_CLIENT_ID "/telemetry"
-#define MQTT_SETTINGS_TOPIC 			MQTT_CLIENT_ID "/settings"
+
+// Telemetry
+#define MQTT_TELEMETRY_TOPIC 			MQTT_CLIENT_ID "/data/telemetry"
+
+// Settings
+#define MQTT_GET_SETTINGS_TOPIC 		MQTT_CLIENT_ID "/data/settings"
+#define MQTT_SET_SETTINGS_TOPIC 		MQTT_CLIENT_ID "/action/settings"
+
+// Gestures
+#define MQTT_GET_GESTURES_TOPIC 		MQTT_CLIENT_ID "/data/gestures"
+#define MQTT_SAVE_GESTURES_TOPIC 		MQTT_CLIENT_ID "/action/gestures"
+#define MQTT_DELETE_GESTURES_TOPIC 		MQTT_CLIENT_ID "/action/gestures/remove"
+
+// Perform gesture
+#define MQTT_PERFORM_GESTURE_ID_TOPIC 	MQTT_CLIENT_ID "/action/performGestureId"
+#define MQTT_PERFORM_GESTURE_RAW_TOPIC 	MQTT_CLIENT_ID "/action/performGestureRaw"
+#define MQTT_SET_POSITIONS_TOPIC 		MQTT_CLIENT_ID "/action/positions"
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -98,7 +109,7 @@ static QueueHandle_t xQueueMQTTSendMessage = NULL;
 static QueueHandle_t xQueueMQTTReceiveMessage = NULL;
 /* Stores the handle of the task that will be notified when MQTT receives data or receives a request to send data. */
 static TaskHandle_t xTaskToNotifyMqttSendAndReceive = NULL;
-static int lastIdTopicMQTT;
+static char *lastTopicMQTT;
 static buffer_t *MQTTdataBuffer = NULL;
 static SemaphoreHandle_t xSemaphoreMqttConnect;
 static TimerHandle_t xOnlinePublishTimer;
@@ -109,8 +120,8 @@ static mqtt_client_t *client;
 void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
 static void MX_USART2_UART_Init(void);
-void StartDefaultTask(void const * argument);
-void StartUartTask(void const * argument);
+void StartDefaultTask(void const *argument);
+void StartUartTask(void const *argument);
 
 /* USER CODE BEGIN PFP */
 void StartProtocolParserTask(void *argument);
@@ -129,207 +140,195 @@ int _write(int file, char *ptr, int len) {
 /* USER CODE END 0 */
 
 /**
-  * @brief  The application entry point.
-  * @retval int
-  */
-int main(void)
-{
-  /* USER CODE BEGIN 1 */
+ * @brief  The application entry point.
+ * @retval int
+ */
+int main(void) {
+	/* USER CODE BEGIN 1 */
 
-  /* USER CODE END 1 */
+	/* USER CODE END 1 */
 
-  /* Enable I-Cache---------------------------------------------------------*/
-  SCB_EnableICache();
+	/* Enable I-Cache---------------------------------------------------------*/
+	SCB_EnableICache();
 
-  /* MCU Configuration--------------------------------------------------------*/
+	/* MCU Configuration--------------------------------------------------------*/
 
-  /* Reset of all peripherals, Initializes the Flash interface and the Systick. */
-  HAL_Init();
+	/* Reset of all peripherals, Initializes the Flash interface and the Systick. */
+	HAL_Init();
 
-  /* USER CODE BEGIN Init */
+	/* USER CODE BEGIN Init */
 
-  /* USER CODE END Init */
+	/* USER CODE END Init */
 
-  /* Configure the system clock */
-  SystemClock_Config();
+	/* Configure the system clock */
+	SystemClock_Config();
 
-  /* USER CODE BEGIN SysInit */
+	/* USER CODE BEGIN SysInit */
 
-  /* USER CODE END SysInit */
+	/* USER CODE END SysInit */
 
-  /* Initialize all configured peripherals */
-  MX_GPIO_Init();
-  MX_USART2_UART_Init();
-  /* USER CODE BEGIN 2 */
+	/* Initialize all configured peripherals */
+	MX_GPIO_Init();
+	MX_USART2_UART_Init();
+	/* USER CODE BEGIN 2 */
 
-  /* USER CODE END 2 */
+	/* USER CODE END 2 */
 
-  /* USER CODE BEGIN RTOS_MUTEX */
+	/* USER CODE BEGIN RTOS_MUTEX */
 	/* add mutexes, ... */
-  /* USER CODE END RTOS_MUTEX */
+	/* USER CODE END RTOS_MUTEX */
 
-  /* USER CODE BEGIN RTOS_SEMAPHORES */
+	/* USER CODE BEGIN RTOS_SEMAPHORES */
 	/* add semaphores, ... */
 	xSemaphoreMqttConnect = xSemaphoreCreateBinary();
 	xSemaphoreGive(xSemaphoreMqttConnect);
-  /* USER CODE END RTOS_SEMAPHORES */
+	/* USER CODE END RTOS_SEMAPHORES */
 
-  /* USER CODE BEGIN RTOS_TIMERS */
+	/* USER CODE BEGIN RTOS_TIMERS */
 	/* start timers, add new ones, ... */
-	xOnlinePublishTimer = xTimerCreate(
-			"PublishTimer",
+	xOnlinePublishTimer = xTimerCreate("PublishTimer",
 			pdMS_TO_TICKS(MQTT_ONLINE_PUBLISH_PERIOD_MS),
-			pdTRUE,
-			(void*)0,
-			vOnlinePublishCallback);
-  /* USER CODE END RTOS_TIMERS */
+			pdTRUE, (void*) 0, vOnlinePublishCallback);
+	/* USER CODE END RTOS_TIMERS */
 
-  /* USER CODE BEGIN RTOS_QUEUES */
+	/* USER CODE BEGIN RTOS_QUEUES */
 	/* add queues, ... */
-  /* USER CODE END RTOS_QUEUES */
+	/* USER CODE END RTOS_QUEUES */
 
-  /* Create the thread(s) */
-  /* definition and creation of defaultTask */
-  osThreadDef(defaultTask, StartDefaultTask, osPriorityNormal, 0, 256);
-  defaultTaskHandle = osThreadCreate(osThread(defaultTask), NULL);
+	/* Create the thread(s) */
+	/* definition and creation of defaultTask */
+	osThreadDef(defaultTask, StartDefaultTask, osPriorityNormal, 0, 256);
+	defaultTaskHandle = osThreadCreate(osThread(defaultTask), NULL);
 
-  /* definition and creation of uartTask */
-  osThreadDef(uartTask, StartUartTask, osPriorityNormal, 0, 256);
-  uartTaskHandle = osThreadCreate(osThread(uartTask), NULL);
+	/* definition and creation of uartTask */
+	osThreadDef(uartTask, StartUartTask, osPriorityNormal, 0, 256);
+	uartTaskHandle = osThreadCreate(osThread(uartTask), NULL);
 
-  /* USER CODE BEGIN RTOS_THREADS */
+	/* USER CODE BEGIN RTOS_THREADS */
 	/* add threads, ... */
-  /* USER CODE END RTOS_THREADS */
+	/* USER CODE END RTOS_THREADS */
 
-  /* Start scheduler */
-  osKernelStart();
+	/* Start scheduler */
+	osKernelStart();
 
-  /* We should never get here as control is now taken by the scheduler */
-  /* Infinite loop */
-  /* USER CODE BEGIN WHILE */
+	/* We should never get here as control is now taken by the scheduler */
+	/* Infinite loop */
+	/* USER CODE BEGIN WHILE */
 	while (1) {
-    /* USER CODE END WHILE */
+		/* USER CODE END WHILE */
 
-    /* USER CODE BEGIN 3 */
+		/* USER CODE BEGIN 3 */
 	}
-  /* USER CODE END 3 */
+	/* USER CODE END 3 */
 }
 
 /**
-  * @brief System Clock Configuration
-  * @retval None
-  */
-void SystemClock_Config(void)
-{
-  RCC_OscInitTypeDef RCC_OscInitStruct = {0};
-  RCC_ClkInitTypeDef RCC_ClkInitStruct = {0};
-  RCC_PeriphCLKInitTypeDef PeriphClkInitStruct = {0};
+ * @brief System Clock Configuration
+ * @retval None
+ */
+void SystemClock_Config(void) {
+	RCC_OscInitTypeDef RCC_OscInitStruct = { 0 };
+	RCC_ClkInitTypeDef RCC_ClkInitStruct = { 0 };
+	RCC_PeriphCLKInitTypeDef PeriphClkInitStruct = { 0 };
 
-  /** Configure LSE Drive Capability
-  */
-  HAL_PWR_EnableBkUpAccess();
-  /** Configure the main internal regulator output voltage
-  */
-  __HAL_RCC_PWR_CLK_ENABLE();
-  __HAL_PWR_VOLTAGESCALING_CONFIG(PWR_REGULATOR_VOLTAGE_SCALE1);
-  /** Initializes the RCC Oscillators according to the specified parameters
-  * in the RCC_OscInitTypeDef structure.
-  */
-  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSI;
-  RCC_OscInitStruct.HSIState = RCC_HSI_ON;
-  RCC_OscInitStruct.HSICalibrationValue = RCC_HSICALIBRATION_DEFAULT;
-  RCC_OscInitStruct.PLL.PLLState = RCC_PLL_ON;
-  RCC_OscInitStruct.PLL.PLLSource = RCC_PLLSOURCE_HSI;
-  RCC_OscInitStruct.PLL.PLLM = 8;
-  RCC_OscInitStruct.PLL.PLLN = 216;
-  RCC_OscInitStruct.PLL.PLLP = RCC_PLLP_DIV2;
-  RCC_OscInitStruct.PLL.PLLQ = 2;
-  if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  /** Activate the Over-Drive mode
-  */
-  if (HAL_PWREx_EnableOverDrive() != HAL_OK)
-  {
-    Error_Handler();
-  }
-  /** Initializes the CPU, AHB and APB buses clocks
-  */
-  RCC_ClkInitStruct.ClockType = RCC_CLOCKTYPE_HCLK|RCC_CLOCKTYPE_SYSCLK
-                              |RCC_CLOCKTYPE_PCLK1|RCC_CLOCKTYPE_PCLK2;
-  RCC_ClkInitStruct.SYSCLKSource = RCC_SYSCLKSOURCE_PLLCLK;
-  RCC_ClkInitStruct.AHBCLKDivider = RCC_SYSCLK_DIV1;
-  RCC_ClkInitStruct.APB1CLKDivider = RCC_HCLK_DIV4;
-  RCC_ClkInitStruct.APB2CLKDivider = RCC_HCLK_DIV2;
+	/** Configure LSE Drive Capability
+	 */
+	HAL_PWR_EnableBkUpAccess();
+	/** Configure the main internal regulator output voltage
+	 */
+	__HAL_RCC_PWR_CLK_ENABLE();
+	__HAL_PWR_VOLTAGESCALING_CONFIG(PWR_REGULATOR_VOLTAGE_SCALE1);
+	/** Initializes the RCC Oscillators according to the specified parameters
+	 * in the RCC_OscInitTypeDef structure.
+	 */
+	RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSI;
+	RCC_OscInitStruct.HSIState = RCC_HSI_ON;
+	RCC_OscInitStruct.HSICalibrationValue = RCC_HSICALIBRATION_DEFAULT;
+	RCC_OscInitStruct.PLL.PLLState = RCC_PLL_ON;
+	RCC_OscInitStruct.PLL.PLLSource = RCC_PLLSOURCE_HSI;
+	RCC_OscInitStruct.PLL.PLLM = 8;
+	RCC_OscInitStruct.PLL.PLLN = 216;
+	RCC_OscInitStruct.PLL.PLLP = RCC_PLLP_DIV2;
+	RCC_OscInitStruct.PLL.PLLQ = 2;
+	if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK) {
+		Error_Handler();
+	}
+	/** Activate the Over-Drive mode
+	 */
+	if (HAL_PWREx_EnableOverDrive() != HAL_OK) {
+		Error_Handler();
+	}
+	/** Initializes the CPU, AHB and APB buses clocks
+	 */
+	RCC_ClkInitStruct.ClockType = RCC_CLOCKTYPE_HCLK | RCC_CLOCKTYPE_SYSCLK
+			| RCC_CLOCKTYPE_PCLK1 | RCC_CLOCKTYPE_PCLK2;
+	RCC_ClkInitStruct.SYSCLKSource = RCC_SYSCLKSOURCE_PLLCLK;
+	RCC_ClkInitStruct.AHBCLKDivider = RCC_SYSCLK_DIV1;
+	RCC_ClkInitStruct.APB1CLKDivider = RCC_HCLK_DIV4;
+	RCC_ClkInitStruct.APB2CLKDivider = RCC_HCLK_DIV2;
 
-  if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_7) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  PeriphClkInitStruct.PeriphClockSelection = RCC_PERIPHCLK_USART2;
-  PeriphClkInitStruct.Usart2ClockSelection = RCC_USART2CLKSOURCE_PCLK1;
-  if (HAL_RCCEx_PeriphCLKConfig(&PeriphClkInitStruct) != HAL_OK)
-  {
-    Error_Handler();
-  }
+	if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_7) != HAL_OK) {
+		Error_Handler();
+	}
+	PeriphClkInitStruct.PeriphClockSelection = RCC_PERIPHCLK_USART2;
+	PeriphClkInitStruct.Usart2ClockSelection = RCC_USART2CLKSOURCE_PCLK1;
+	if (HAL_RCCEx_PeriphCLKConfig(&PeriphClkInitStruct) != HAL_OK) {
+		Error_Handler();
+	}
 }
 
 /**
-  * @brief USART2 Initialization Function
-  * @param None
-  * @retval None
-  */
-static void MX_USART2_UART_Init(void)
-{
+ * @brief USART2 Initialization Function
+ * @param None
+ * @retval None
+ */
+static void MX_USART2_UART_Init(void) {
 
-  /* USER CODE BEGIN USART2_Init 0 */
+	/* USER CODE BEGIN USART2_Init 0 */
 
-  /* USER CODE END USART2_Init 0 */
+	/* USER CODE END USART2_Init 0 */
 
-  /* USER CODE BEGIN USART2_Init 1 */
+	/* USER CODE BEGIN USART2_Init 1 */
 
-  /* USER CODE END USART2_Init 1 */
-  huart2.Instance = USART2;
-  huart2.Init.BaudRate = 115200;
-  huart2.Init.WordLength = UART_WORDLENGTH_8B;
-  huart2.Init.StopBits = UART_STOPBITS_1;
-  huart2.Init.Parity = UART_PARITY_NONE;
-  huart2.Init.Mode = UART_MODE_TX_RX;
-  huart2.Init.HwFlowCtl = UART_HWCONTROL_NONE;
-  huart2.Init.OverSampling = UART_OVERSAMPLING_16;
-  huart2.Init.OneBitSampling = UART_ONE_BIT_SAMPLE_DISABLE;
-  huart2.AdvancedInit.AdvFeatureInit = UART_ADVFEATURE_NO_INIT;
-  if (HAL_UART_Init(&huart2) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  /* USER CODE BEGIN USART2_Init 2 */
+	/* USER CODE END USART2_Init 1 */
+	huart2.Instance = USART2;
+	huart2.Init.BaudRate = 115200;
+	huart2.Init.WordLength = UART_WORDLENGTH_8B;
+	huart2.Init.StopBits = UART_STOPBITS_1;
+	huart2.Init.Parity = UART_PARITY_NONE;
+	huart2.Init.Mode = UART_MODE_TX_RX;
+	huart2.Init.HwFlowCtl = UART_HWCONTROL_NONE;
+	huart2.Init.OverSampling = UART_OVERSAMPLING_16;
+	huart2.Init.OneBitSampling = UART_ONE_BIT_SAMPLE_DISABLE;
+	huart2.AdvancedInit.AdvFeatureInit = UART_ADVFEATURE_NO_INIT;
+	if (HAL_UART_Init(&huart2) != HAL_OK) {
+		Error_Handler();
+	}
+	/* USER CODE BEGIN USART2_Init 2 */
 
-  /* USER CODE END USART2_Init 2 */
+	/* USER CODE END USART2_Init 2 */
 
 }
 
 /**
-  * @brief GPIO Initialization Function
-  * @param None
-  * @retval None
-  */
-static void MX_GPIO_Init(void)
-{
+ * @brief GPIO Initialization Function
+ * @param None
+ * @retval None
+ */
+static void MX_GPIO_Init(void) {
 
-  /* GPIO Ports Clock Enable */
-  __HAL_RCC_GPIOC_CLK_ENABLE();
-  __HAL_RCC_GPIOH_CLK_ENABLE();
-  __HAL_RCC_GPIOA_CLK_ENABLE();
-  __HAL_RCC_GPIOB_CLK_ENABLE();
-  __HAL_RCC_GPIOD_CLK_ENABLE();
-  __HAL_RCC_GPIOG_CLK_ENABLE();
+	/* GPIO Ports Clock Enable */
+	__HAL_RCC_GPIOC_CLK_ENABLE();
+	__HAL_RCC_GPIOH_CLK_ENABLE();
+	__HAL_RCC_GPIOA_CLK_ENABLE();
+	__HAL_RCC_GPIOB_CLK_ENABLE();
+	__HAL_RCC_GPIOD_CLK_ENABLE();
+	__HAL_RCC_GPIOG_CLK_ENABLE();
 
 }
 
 /* USER CODE BEGIN 4 */
-static int inpub_id;
+static char *input_topic;
 
 static void mqtt_connection_cb(mqtt_client_t *client, void *arg,
 		mqtt_connection_status_t status);
@@ -345,7 +344,7 @@ void mqtt_connect(mqtt_client_t *client) {
 	struct mqtt_connect_client_info_t ci;
 	err_t err;
 
-	printf("mqtt_connect: start try to connect to 192.168.0.3:1883\n");
+	printf("mqtt_connect: start try to connect to 92.53.124.175:1883\n");
 
 	/* Setup an empty client info structure */
 	memset(&ci, 0, sizeof(ci));
@@ -358,7 +357,7 @@ void mqtt_connect(mqtt_client_t *client) {
 	ci.will_msg = MQTT_CLIENT_ID;
 
 	ip_addr_t mqttServerIP;
-	IP4_ADDR(&mqttServerIP, 192, 168, 0, 3);
+	IP4_ADDR(&mqttServerIP, 92, 53, 124, 175);
 	u16_t MQTT_PORT = 1883;
 
 	/* Initiate client and connect to server, if this fails immediately an error code is returned
@@ -390,11 +389,64 @@ static void mqtt_connection_cb(mqtt_client_t *client, void *arg,
 
 		// Подписываемся на все топики, которые нужны
 		/* Subscribe to a topic named "serverData" with QoS level 1, call mqtt_sub_request_cb with result */
-		err = mqtt_subscribe(client, MQTT_SETTINGS_TOPIC, 1,
+		err = mqtt_subscribe(client, MQTT_SET_SETTINGS_TOPIC, 1,
 				mqtt_sub_request_cb, arg);
 
 		if (err != ERR_OK) {
-			printf("mqtt_connection_cb: mqtt_subscribe return: %d\n", err);
+			printf(
+					"MQTT_SET_SETTINGS_TOPIC mqtt_connection_cb: mqtt_subscribe return: %d\n",
+					err);
+			Error_Handler();
+		}
+
+		err = mqtt_subscribe(client, MQTT_SAVE_GESTURES_TOPIC, 1,
+				mqtt_sub_request_cb, arg);
+
+		if (err != ERR_OK) {
+			printf(
+					"MQTT_SAVE_GESTURES_TOPIC mqtt_connection_cb: mqtt_subscribe return: %d\n",
+					err);
+			Error_Handler();
+		}
+
+		err = mqtt_subscribe(client, MQTT_DELETE_GESTURES_TOPIC, 1,
+				mqtt_sub_request_cb, arg);
+
+		if (err != ERR_OK) {
+			printf(
+					"MQTT_DELETE_GESTURES_TOPIC mqtt_connection_cb: mqtt_subscribe return: %d\n",
+					err);
+			Error_Handler();
+		}
+
+		err = mqtt_subscribe(client, MQTT_PERFORM_GESTURE_ID_TOPIC, 1,
+				mqtt_sub_request_cb, arg);
+
+		if (err != ERR_OK) {
+			printf(
+					"MQTT_PERFORM_GESTURE_ID_TOPIC mqtt_connection_cb: mqtt_subscribe return: %d\n",
+					err);
+			Error_Handler();
+		}
+
+		err = mqtt_subscribe(client, MQTT_PERFORM_GESTURE_RAW_TOPIC, 1,
+				mqtt_sub_request_cb, arg);
+
+		if (err != ERR_OK) {
+			printf(
+					"MQTT_PERFORM_GESTURE_RAW_TOPIC mqtt_connection_cb: mqtt_subscribe return: %d\n",
+					err);
+			Error_Handler();
+		}
+
+		err = mqtt_subscribe(client, MQTT_SET_POSITIONS_TOPIC, 1,
+				mqtt_sub_request_cb, arg);
+
+		if (err != ERR_OK) {
+			printf(
+					"MQTT_SET_POSITIONS_TOPIC mqtt_connection_cb: mqtt_subscribe return: %d\n",
+					err);
+			Error_Handler();
 		}
 
 		if (xTimerStart( xOnlinePublishTimer, 500) == pdTRUE) {
@@ -430,29 +482,38 @@ static void mqtt_incoming_publish_cb(void *arg, const char *topic,
 	// Очищаем предыдущий буфер, если он остался (такого быть по идее не должно, только если пропало соединение)
 	if (MQTTdataBuffer != NULL) {
 		printf(
-				"Receive buffer is set for topic with id %d. Destroy receive buffer with length %d bytes\n",
-				lastIdTopicMQTT, buffer_lenght(MQTTdataBuffer));
+				"Receive buffer is set for topic with id %s. Destroy receive buffer with length %d bytes\n",
+				lastTopicMQTT, buffer_lenght(MQTTdataBuffer));
 		buffer_destroy(MQTTdataBuffer);
 		vPortFree(MQTTdataBuffer);
 		MQTTdataBuffer = NULL;
 	}
 
-	// Создаем буффер для приема данных.
-	printf("Create new receive buffer for topic %s\n", topic);
-	MQTTdataBuffer = pvPortMalloc(sizeof(buffer_t));
-	buffer_init(MQTTdataBuffer, 0);
-	lastIdTopicMQTT = inpub_id;
+	lastTopicMQTT = input_topic;
 
 	// Определяем id топика для получения данных в mqtt_incoming_data_cb
 	/* Decode topic string into a user defined reference */
-	if (strcmp(topic, MQTT_SETTINGS_TOPIC) == 0) {
-		inpub_id = 0;
-	} else if (strcmp(topic, "another_topic") == 0) {
-		inpub_id = 1;
+	if (strcmp(topic, MQTT_SET_SETTINGS_TOPIC) == 0) {
+		input_topic = MQTT_SET_SETTINGS_TOPIC;
+	} else if (strcmp(topic, MQTT_SAVE_GESTURES_TOPIC) == 0) {
+		input_topic = MQTT_SAVE_GESTURES_TOPIC;
+	} else if (strcmp(topic, MQTT_DELETE_GESTURES_TOPIC) == 0) {
+		input_topic = MQTT_DELETE_GESTURES_TOPIC;
+	} else if (strcmp(topic, MQTT_PERFORM_GESTURE_ID_TOPIC) == 0) {
+		input_topic = MQTT_PERFORM_GESTURE_ID_TOPIC;
+	} else if (strcmp(topic, MQTT_PERFORM_GESTURE_RAW_TOPIC) == 0) {
+		input_topic = MQTT_PERFORM_GESTURE_RAW_TOPIC;
+	} else if (strcmp(topic, MQTT_SET_POSITIONS_TOPIC) == 0) {
+		input_topic = MQTT_SET_POSITIONS_TOPIC;
 	} else {
 		/* For all other topics */
-		inpub_id = 2;
+		input_topic = NULL;
 	}
+
+	// Создаем буффер для приема данных.
+	printf("Create new receive buffer for topic %s\n", input_topic);
+	MQTTdataBuffer = pvPortMalloc(sizeof(buffer_t));
+	buffer_init(MQTTdataBuffer, 0);
 }
 
 static void mqtt_incoming_data_cb(void *arg, const u8_t *data, u16_t len,
@@ -477,7 +538,7 @@ static void mqtt_incoming_data_cb(void *arg, const u8_t *data, u16_t len,
 				(unsigned int) flags);
 
 		/* Call function or do action depending on reference, in this case inpub_id */
-		if (inpub_id == 0) {
+		if (input_topic != NULL) {
 			/* Don't trust the publisher, check zero termination */
 			int size = buffer_lenght(MQTTdataBuffer);
 			uint8_t *payload = MQTTdataBuffer->data;
@@ -486,7 +547,7 @@ static void mqtt_incoming_data_cb(void *arg, const u8_t *data, u16_t len,
 			MQTTdataBuffer = NULL;
 
 			MQTT_Protocol_t sendData;
-			sendData.topicName = "subtopic";
+			sendData.topicName = input_topic;
 			sendData.data = payload;
 			sendData.dataLenght = size;
 			xQueueSend(xQueueMQTTReceiveMessage, &sendData, 0);
@@ -549,16 +610,16 @@ void StartProtocolParserTask(void *pvParameters) {
 		portMAX_DELAY);
 
 		// Формируем пакет с данными
-		uint8_t *data = pvPortMalloc(sizeof(uint8_t));
-		data[0] = receivedData;
-		Prothesis_Protocol_t prothesisSendData;
-		prothesisSendData.protocolCommand = Telemetry;
-		prothesisSendData.data = data;
-		prothesisSendData.dataLenght = 1;
-		xQueueSend(xQueueUARTReceiveMessage, &prothesisSendData, portMAX_DELAY);
+//		uint8_t *data = pvPortMalloc(sizeof(uint8_t));
+//		data[0] = receivedData;
+//		Prothesis_Protocol_t prothesisSendData;
+//		prothesisSendData.protocolCommand = PROTOCOL_COMMAND_TELEMETRY;
+//		prothesisSendData.data = data;
+//		prothesisSendData.dataLenght = 1;
+//		xQueueSend(xQueueUARTReceiveMessage, &prothesisSendData, portMAX_DELAY);
 
-		// Оповещаем UART таску, что пришла новая команда.
-		xTaskNotifyGive(xTaskToNotifyUartSendAndReceive);
+// Оповещаем UART таску, что пришла новая команда.
+//xTaskNotifyGive(xTaskToNotifyUartSendAndReceive);
 	}
 
 	/* Tasks must not attempt to return from their implementing
@@ -578,11 +639,10 @@ void StartProtocolParserTask(void *pvParameters) {
  * @retval None
  */
 /* USER CODE END Header_StartDefaultTask */
-void StartDefaultTask(void const * argument)
-{
-  /* init code for LWIP */
-  MX_LWIP_Init();
-  /* USER CODE BEGIN 5 */
+void StartDefaultTask(void const *argument) {
+	/* init code for LWIP */
+	MX_LWIP_Init();
+	/* USER CODE BEGIN 5 */
 
 	// Initialize MQTT queue
 	xQueueMQTTSendMessage = xQueueCreate(qpeekQUEUE_LENGTH,
@@ -590,7 +650,6 @@ void StartDefaultTask(void const * argument)
 	xQueueMQTTReceiveMessage = xQueueCreate(qpeekQUEUE_LENGTH,
 			sizeof(MQTT_Protocol_t));
 
-	osDelay(2000);
 	printf("[MQTT Task] Start MQTT\n");
 	xTaskToNotifyMqttSendAndReceive = xTaskGetCurrentTaskHandle();
 	client = mqtt_client_new();
@@ -655,25 +714,36 @@ void StartDefaultTask(void const * argument)
 						(unsigned int) mqttReceiveData.dataLenght);
 
 				// Формируем пакет данных для отправки по UART
-				Prothesis_Protocol_t prothesisSendData;
+				enum ProtocolCommandType type = PROTOCOL_COMMAND_EMPTY;
 
-				if (strcmp(mqttReceiveData.topicName, "subtopic") == 0) {
-					prothesisSendData.protocolCommand = Telemetry;
+				char *topic = mqttReceiveData.topicName;
+				if (strcmp(topic, MQTT_SET_SETTINGS_TOPIC) == 0) {
+					type = PROTOCOL_COMMAND_SET_SETTINGS;
+				} else if (strcmp(topic, MQTT_SAVE_GESTURES_TOPIC) == 0) {
+					type = PROTOCOL_COMMAND_SAVE_GESTURES;
+				} else if (strcmp(topic, MQTT_DELETE_GESTURES_TOPIC) == 0) {
+					type = PROTOCOL_COMMAND_DELETE_GESTURES;
+				} else if (strcmp(topic, MQTT_PERFORM_GESTURE_ID_TOPIC) == 0) {
+					type = PROTOCOL_COMMAND_PERFORM_GESTURE_ID;
+				} else if (strcmp(topic, MQTT_PERFORM_GESTURE_RAW_TOPIC) == 0) {
+					type = PROTOCOL_COMMAND_PERFORM_GESTURE_RAW;
+				} else if (strcmp(topic, MQTT_SET_POSITIONS_TOPIC) == 0) {
+					type = PROTOCOL_COMMAND_SET_POSITIONS;
 				}
 
-				configASSERT(prothesisSendData.protocolCommand != Empty);
+				configASSERT(type != PROTOCOL_COMMAND_EMPTY);
 
-				prothesisSendData.data = mqttReceiveData.data;
-				prothesisSendData.dataLenght = mqttReceiveData.dataLenght;
-				xQueueSend(xQueueUARTSendMessage, &prothesisSendData,
-						portMAX_DELAY);
+				ProtocolPackageStruct package = ProtocolParser_CreatePackage(
+						type, mqttReceiveData.data, mqttReceiveData.dataLenght);
+
+				xQueueSend(xQueueUARTSendMessage, &package, portMAX_DELAY);
 
 				// Оповещаем UART таску, что данные готовы.
 				xTaskNotifyGive(xTaskToNotifyUartSendAndReceive);
 			}
 		}
 	}
-  /* USER CODE END 5 */
+	/* USER CODE END 5 */
 }
 
 /* USER CODE BEGIN Header_StartUartTask */
@@ -683,9 +753,8 @@ void StartDefaultTask(void const * argument)
  * @retval None
  */
 /* USER CODE END Header_StartUartTask */
-void StartUartTask(void const * argument)
-{
-  /* USER CODE BEGIN StartUartTask */
+void StartUartTask(void const *argument) {
+	/* USER CODE BEGIN StartUartTask */
 	/* Infinite loop */
 	// Создаем стрим для UART
 	xStreamReceiveBuffer = xStreamBufferCreate(sbiSTREAM_BUFFER_LENGTH_BYTES,
@@ -693,10 +762,10 @@ void StartUartTask(void const * argument)
 
 	// Создаем очереди приема/передачи
 	xQueueUARTReceiveMessage = xQueueCreate(qpeekQUEUE_LENGTH,
-			sizeof(Prothesis_Protocol_t));
+			sizeof(ProtocolPackageStruct));
 
 	xQueueUARTSendMessage = xQueueCreate(qpeekQUEUE_LENGTH,
-			sizeof(Prothesis_Protocol_t));
+			sizeof(ProtocolPackageStruct));
 
 	xTaskToNotifyUartSendAndReceive = xTaskGetCurrentTaskHandle();
 
@@ -704,7 +773,7 @@ void StartUartTask(void const * argument)
 	BaseType_t xReturned;
 	TaskHandle_t xHandle = NULL;
 	xReturned = xTaskCreate(StartProtocolParserTask, "protocolPareserTask", 256,
-			NULL, osPriorityNormal, &xHandle);
+	NULL, osPriorityNormal, &xHandle);
 
 	if (xReturned == pdPASS) {
 		/* The task was created. */
@@ -723,36 +792,55 @@ void StartUartTask(void const * argument)
 
 		// Смотрим очередь отправки на протез
 		if (uxQueueMessagesWaiting(xQueueUARTSendMessage)) {
-			Prothesis_Protocol_t sendData;
+			ProtocolPackageStruct sendData;
 			if (xQueueReceive(xQueueUARTSendMessage, &sendData,
 					(TickType_t) 0) == pdPASS) {
 
 				printf(
-						"[UART Task] Required send new UART data (%u bytes), command %02X\n",
-						(unsigned int) sendData.dataLenght,
-						sendData.protocolCommand);
+						"[UART Task] Required send new UART data (%u bytes), command %d\n",
+						(unsigned int) sendData.size, sendData.type);
 
-				HAL_UART_Transmit(&huart2, sendData.data, sendData.dataLenght,
-						1000);
-				vPortFree(sendData.data);
+				HAL_UART_Transmit(&huart2, (uint8_t*) &sendData,
+						ProtocolParser_GetCommonSize(&sendData), 5000);
+
+				ProtocolPackageStruct response;
+				if (xQueueReceive(xQueueUARTReceiveMessage, &response,
+						pdMS_TO_TICKS(5000)) != pdPASS) {
+					printf("[UART Task] response timeout\n");
+					continue;
+				}
+
+				if (response.type == PROTOCOL_COMMAND_ERR
+						|| response.type == PROTOCOL_COMMAND_EMPTY) {
+					printf("[UART Task] response error\n");
+					continue;
+				}
+
+				if (response.type != PROTOCOL_COMMAND_ACK) {
+					xQueueSend(xQueueUARTReceiveMessage, &response,
+							portMAX_DELAY);
+				}
+
+				vPortFree(sendData.payload);
 			}
 		}
 
 		// Смотрим очередь приема с протеза
 		if (uxQueueMessagesWaiting(xQueueUARTReceiveMessage)) {
-			Prothesis_Protocol_t sendData;
-			if (xQueueReceive(xQueueUARTReceiveMessage, &sendData,
+			ProtocolPackageStruct receiveData;
+			if (xQueueReceive(xQueueUARTReceiveMessage, &receiveData,
 					(TickType_t) 0) == pdPASS) {
 
+				continue;
+
 				printf(
-						"[UART Task] Receive new data with length: %u bytes and command %02X\n",
-						(unsigned int) sendData.dataLenght,
-						sendData.protocolCommand);
+						"[UART Task] Receive new data with length: %u bytes and command %d\n",
+						(unsigned int) receiveData.size, receiveData.type);
 
 				MQTT_Protocol_t mqttSendData;
 
-				switch (sendData.protocolCommand) {
-				case Telemetry:
+				switch (receiveData.type) {
+				case PROTOCOL_COMMAND_TELEMETRY:
 					mqttSendData.topicName = MQTT_TELEMETRY_TOPIC;
 					break;
 				default:
@@ -761,7 +849,7 @@ void StartUartTask(void const * argument)
 				}
 				configASSERT(mqttSendData.topicName);
 
-				mqttSendData.data = (uint8_t*)pvPortMalloc(32000);
+				mqttSendData.data = (uint8_t*) pvPortMalloc(32000);
 				mqttSendData.dataLenght = 32000;
 				xQueueSend(xQueueMQTTSendMessage, &mqttSendData, portMAX_DELAY);
 
@@ -770,40 +858,38 @@ void StartUartTask(void const * argument)
 			}
 		}
 	}
-  /* USER CODE END StartUartTask */
+	/* USER CODE END StartUartTask */
 }
 
 /**
-  * @brief  Period elapsed callback in non blocking mode
-  * @note   This function is called  when TIM1 interrupt took place, inside
-  * HAL_TIM_IRQHandler(). It makes a direct call to HAL_IncTick() to increment
-  * a global variable "uwTick" used as application time base.
-  * @param  htim : TIM handle
-  * @retval None
-  */
-void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
-{
-  /* USER CODE BEGIN Callback 0 */
+ * @brief  Period elapsed callback in non blocking mode
+ * @note   This function is called  when TIM1 interrupt took place, inside
+ * HAL_TIM_IRQHandler(). It makes a direct call to HAL_IncTick() to increment
+ * a global variable "uwTick" used as application time base.
+ * @param  htim : TIM handle
+ * @retval None
+ */
+void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim) {
+	/* USER CODE BEGIN Callback 0 */
 
-  /* USER CODE END Callback 0 */
-  if (htim->Instance == TIM1) {
-    HAL_IncTick();
-  }
-  /* USER CODE BEGIN Callback 1 */
+	/* USER CODE END Callback 0 */
+	if (htim->Instance == TIM1) {
+		HAL_IncTick();
+	}
+	/* USER CODE BEGIN Callback 1 */
 
-  /* USER CODE END Callback 1 */
+	/* USER CODE END Callback 1 */
 }
 
 /**
-  * @brief  This function is executed in case of error occurrence.
-  * @retval None
-  */
-void Error_Handler(void)
-{
-  /* USER CODE BEGIN Error_Handler_Debug */
+ * @brief  This function is executed in case of error occurrence.
+ * @retval None
+ */
+void Error_Handler(void) {
+	/* USER CODE BEGIN Error_Handler_Debug */
 	/* User can add his own implementation to report the HAL error return state */
 
-  /* USER CODE END Error_Handler_Debug */
+	/* USER CODE END Error_Handler_Debug */
 }
 
 #ifdef  USE_FULL_ASSERT

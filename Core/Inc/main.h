@@ -59,6 +59,7 @@ void Error_Handler(void);
 
 /* Private defines -----------------------------------------------------------*/
 #define MQTT_OUTPUT_RINGBUF_SIZE 57344
+#define MQTT_REQ_MAX_IN_FLIGHT 15
 /* USER CODE BEGIN Private defines */
 
 /* USER CODE END Private defines */
