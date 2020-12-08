@@ -800,8 +800,13 @@ void StartUartTask(void const *argument) {
 						"[UART Task] Required send new UART data (%u bytes), command %d\n",
 						(unsigned int) sendData.size, sendData.type);
 
-				HAL_UART_Transmit(&huart2, (uint8_t*) &sendData,
-						ProtocolParser_GetCommonSize(&sendData), 5000);
+				buffer_t package;
+				buffer_init(&package, ProtocolParser_GetCommonSize(&sendData));
+				ProtocolParser_AddPackageToBuffer(&sendData, &package);
+
+				HAL_UART_Transmit(&huart2, package.data, package.length, 5000);
+
+				buffer_destroy(&package);
 
 				ProtocolPackageStruct response;
 				if (xQueueReceive(xQueueUARTReceiveMessage, &response,

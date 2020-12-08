@@ -9,6 +9,7 @@
 #define INC_PROTOCOL_PARSER_H_
 
 #include "stdint.h"
+#include "buffer.h"
 
 enum ProtocolCommandType {
 	PROTOCOL_COMMAND_EMPTY = 0,
@@ -36,5 +37,7 @@ typedef struct {
 ProtocolPackageStruct ProtocolParser_CreatePackage(enum ProtocolCommandType type, uint8_t* payload, uint16_t payload_size);
 
 int ProtocolParser_GetCommonSize(ProtocolPackageStruct* package);
+
+void ProtocolParser_AddPackageToBuffer(ProtocolPackageStruct* package, buffer_t* buffer);
 
 #endif /* INC_PROTOCOL_PARSER_H_ */

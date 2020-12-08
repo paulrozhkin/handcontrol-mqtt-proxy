@@ -22,8 +22,17 @@ ProtocolPackageStruct ProtocolParser_CreatePackage(enum ProtocolCommandType type
 	return package;
 }
 
+void ProtocolParser_AddPackageToBuffer(ProtocolPackageStruct* package, buffer_t* buffer)
+{
+	buffer_array_add(buffer, package->SFD, sizeof(package->SFD));
+	buffer_add(buffer, package->type);
+	buffer_add(buffer, package->size & 0xFF);
+	buffer_add(buffer, (package->size >> 8) & 0xFF);
+	buffer_array_add(buffer, package->payload, package->size);
+	buffer_add(buffer, package->crc8);
+}
 
 int ProtocolParser_GetCommonSize(ProtocolPackageStruct* package)
 {
-	return sizeof(ProtocolPackageStruct) + package->size - 1;
+	return 12 + package->size;
 }
