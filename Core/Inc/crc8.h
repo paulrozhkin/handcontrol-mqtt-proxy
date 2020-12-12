@@ -11,6 +11,6 @@
 #include <stdint.h>
 #include <stddef.h>
 
-uint8_t calculate_crc8(const uint8_t* data, size_t length);
+uint8_t calculate_crc8(const uint8_t* data, size_t length, uint8_t crc_input);
 
 #endif /* INC_CRC8_H_ */

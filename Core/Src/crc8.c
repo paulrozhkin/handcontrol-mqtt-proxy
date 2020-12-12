@@ -43,8 +43,8 @@ uint8_t fast_crc_cal8bits(uint8_t crc, int size, const uint8_t *data)
   return(crc);
 }
 
-uint8_t calculate_crc8(const uint8_t* data, size_t length)
+uint8_t calculate_crc8(const uint8_t* data, size_t length, uint8_t crc_input)
 {
-	uint8_t crc = fast_crc_cal8bits(0, length, data);
+	uint8_t crc = fast_crc_cal8bits(crc_input, length, data);
 	return crc;
 }

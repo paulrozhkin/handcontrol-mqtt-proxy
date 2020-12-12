@@ -6,6 +6,8 @@
  */
 
 #include "buffer.h"
+#include "stddef.h"
+#include "cmsis_os.h"
 
 void buffer_init(buffer_t *buffer_addr, buffer_size_t default_size) {
 	buffer_size_t alloc_size =
@@ -71,4 +73,11 @@ void buffer_internal_grow_buffer(buffer_t *buffer_addr, int min_capacity) {
 	buffer_addr->data = newBuffer;
 	buffer_addr->capacity = newCapacity;
 	vPortFree(oldBuffer);
+}
+
+uint8_t* buffer_get_data_copy(buffer_t* buffer_addr)
+{
+	uint8_t* copy_addr = pvPortMalloc(buffer_addr->length);
+	memcpy(copy_addr, buffer_addr->data, buffer_addr->length);
+	return copy_addr;
 }

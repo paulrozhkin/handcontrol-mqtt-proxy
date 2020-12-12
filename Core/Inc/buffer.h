@@ -12,8 +12,6 @@
 #include <string.h>
 #include "stdbool.h"
 #include "stdint.h"
-#include "stddef.h"
-#include "cmsis_os.h"
 
 #define BASE_SIZE_BUFFER 16
 
@@ -93,5 +91,12 @@ void buffer_internal_ensure_capacity(buffer_t *buffer_addr, int min_capacity);
  * @retval None.
  */
 void buffer_internal_grow_buffer(buffer_t *buffer_addr, int min_capacity);
+
+/**
+ * @brief Copy and return buffer data.
+ * @param buffer_addr pointer to buffer
+ * @retval Data.
+ */
+uint8_t* buffer_get_data_copy(buffer_t* buffer_addr);
 
 #endif /* INC_BUFFER_H_ */

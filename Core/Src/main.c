@@ -103,6 +103,8 @@ static QueueHandle_t xQueueUARTSendMessage = NULL;
 static QueueHandle_t xQueueUARTReceiveMessage = NULL;
 /* Stores the handle of the task that will be notified when UART receives data or receives a request to send data. */
 static TaskHandle_t xTaskToNotifyUartSendAndReceive = NULL;
+static TaskHandle_t xTaskToNotifyTelemetryReceive = NULL;
+static ProtocolParserStruct protocolParser;
 
 /* === MQTT PV === */
 static QueueHandle_t xQueueMQTTSendMessage = NULL;
@@ -604,22 +606,48 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart) {
 void StartProtocolParserTask(void *pvParameters) {
 	configASSERT(xStreamReceiveBuffer != NULL);
 
+	ProtocolParser_Init(&protocolParser);
+	bool isFirstTelemetry = true;
+
 	for (;;) {
 		uint8_t receivedData;
 		xStreamBufferReceive(xStreamReceiveBuffer, (void*) &receivedData, 1,
 		portMAX_DELAY);
 
-		// Формируем пакет с данными
-//		uint8_t *data = pvPortMalloc(sizeof(uint8_t));
-//		data[0] = receivedData;
-//		Prothesis_Protocol_t prothesisSendData;
-//		prothesisSendData.protocolCommand = PROTOCOL_COMMAND_TELEMETRY;
-//		prothesisSendData.data = data;
-//		prothesisSendData.dataLenght = 1;
-//		xQueueSend(xQueueUARTReceiveMessage, &prothesisSendData, portMAX_DELAY);
+		ProtocolParser_Update(&protocolParser, receivedData, HAL_GetTick());
 
-// Оповещаем UART таску, что пришла новая команда.
-//xTaskNotifyGive(xTaskToNotifyUartSendAndReceive);
+		if (protocolParser.state == PROTOCOL_PARSER_RECEIVED) {
+			ProtocolPackageStruct package;
+			ProtocolParser_PopPackage(&protocolParser, &package);
+
+			printf("[Parser] New protocol command received: %d (%u bytes)\n",
+					package.type, (unsigned int) package.size);
+
+			// Телеметрию шлем напрямую
+			if (package.type == PROTOCOL_COMMAND_TELEMETRY) {
+				MQTT_Protocol_t mqttSendData;
+
+				mqttSendData.topicName = MQTT_TELEMETRY_TOPIC;
+				mqttSendData.data = package.payload;
+				mqttSendData.dataLenght = package.size;
+				xQueueSend(xQueueMQTTSendMessage, &mqttSendData, portMAX_DELAY);
+
+				// Оповещаем MQTT таску, что данные готовы.
+
+				if (isFirstTelemetry == true)
+				{
+					printf("[Parser] First telemetry received\n");
+					xTaskNotifyGive(xTaskToNotifyTelemetryReceive);
+					isFirstTelemetry = false;
+				}
+
+				xTaskNotifyGive(xTaskToNotifyMqttSendAndReceive);
+			} else {
+				xQueueSend(xQueueUARTReceiveMessage, &package, portMAX_DELAY);
+				// Оповещаем UART таску, что приняты данные с протеза.
+				xTaskNotifyGive(xTaskToNotifyUartSendAndReceive);
+			}
+		}
 	}
 
 	/* Tasks must not attempt to return from their implementing
@@ -768,6 +796,7 @@ void StartUartTask(void const *argument) {
 			sizeof(ProtocolPackageStruct));
 
 	xTaskToNotifyUartSendAndReceive = xTaskGetCurrentTaskHandle();
+	xTaskToNotifyTelemetryReceive = xTaskGetCurrentTaskHandle();
 
 	// Создаем таску для парсинга протокола
 	BaseType_t xReturned;
@@ -785,6 +814,9 @@ void StartUartTask(void const *argument) {
 	// Активируем прерывание UART.
 	HAL_UART_Receive_IT(&huart2, &uartRxData, 1);
 	printf("[UART Task] start UART interrupt and receive data\n");
+
+	// Ожидаем первого приходила телеметрии, чтобы понять, что протез подключен
+	ulTaskNotifyTake(pdFALSE, portMAX_DELAY);
 
 	for (;;) {
 		ulTaskNotifyTake(pdFALSE, portMAX_DELAY);
