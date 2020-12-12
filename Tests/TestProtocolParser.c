@@ -7,6 +7,7 @@ DEFINE_FFF_GLOBALS;
 // FAKE_VALUE_FUNC(FeedbackUnit, ActuatorController_GetFeedback, ActuatorStruct *);
 FAKE_VOID_FUNC(buffer_init, buffer_t *, buffer_size_t);
 FAKE_VOID_FUNC(buffer_add, buffer_t *, uint8_t);
+FAKE_VOID_FUNC(buffer_destroy, buffer_t *);
 FAKE_VOID_FUNC(buffer_array_add, buffer_t *, uint8_t*, int);
 FAKE_VALUE_FUNC(buffer_size_t, buffer_lenght, buffer_t *);
 FAKE_VALUE_FUNC(uint8_t*, buffer_get_data_copy, buffer_t*);
