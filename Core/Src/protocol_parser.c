@@ -28,7 +28,11 @@ void ProtocolParser_AddPackageToBuffer(ProtocolPackageStruct* package, buffer_t*
 	buffer_add(buffer, package->type);
 	buffer_add(buffer, package->size & 0xFF);
 	buffer_add(buffer, (package->size >> 8) & 0xFF);
-	buffer_array_add(buffer, package->payload, package->size);
+	if (package->size != 0)
+	{
+		buffer_array_add(buffer, package->payload, package->size);
+	}
+
 	buffer_add(buffer, package->crc);
 }
 

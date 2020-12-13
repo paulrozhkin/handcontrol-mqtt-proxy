@@ -50,6 +50,7 @@ typedef struct {
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
 #define LOG_HEAP 0
+#define LOG_ENABLE 0
 
 #define sbiSTREAM_BUFFER_LENGTH_BYTES		( ( size_t ) 100 )
 #define sbiSTREAM_BUFFER_TRIGGER_LEVEL_1	( ( BaseType_t ) 1 )
@@ -116,6 +117,10 @@ static buffer_t *MQTTdataBuffer = NULL;
 static SemaphoreHandle_t xSemaphoreMqttConnect;
 static TimerHandle_t xOnlinePublishTimer;
 static mqtt_client_t *client;
+
+// TODO: global refactoring
+static SemaphoreHandle_t xSemaphoreProsthesisConnect;
+
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -184,6 +189,8 @@ int main(void) {
 	/* add semaphores, ... */
 	xSemaphoreMqttConnect = xSemaphoreCreateBinary();
 	xSemaphoreGive(xSemaphoreMqttConnect);
+
+	xSemaphoreProsthesisConnect = xSemaphoreCreateBinary();
 	/* USER CODE END RTOS_SEMAPHORES */
 
 	/* USER CODE BEGIN RTOS_TIMERS */
@@ -346,8 +353,9 @@ void mqtt_connect(mqtt_client_t *client) {
 	struct mqtt_connect_client_info_t ci;
 	err_t err;
 
+#if( LOG_ENABLE == 1 )
 	printf("mqtt_connect: start try to connect to 92.53.124.175:1883\n");
-
+#endif
 	/* Setup an empty client info structure */
 	memset(&ci, 0, sizeof(ci));
 
@@ -372,7 +380,9 @@ void mqtt_connect(mqtt_client_t *client) {
 
 	/* For now just print the result code if something goes wrong */
 	if (err != ERR_OK) {
+#if( LOG_ENABLE == 1 )
 		printf("mqtt_connect return %d\n", err);
+#endif /* LOG */
 	}
 }
 
@@ -383,7 +393,9 @@ static void mqtt_connection_cb(mqtt_client_t *client, void *arg,
 		mqtt_connection_status_t status) {
 	err_t err;
 	if (status == MQTT_CONNECT_ACCEPTED) {
+#if( LOG_ENABLE == 1 )
 		printf("mqtt_connection_cb: Successfully connected\n");
+#endif /* LOG */
 
 		/* Setup callback for incoming publish requests */
 		mqtt_set_inpub_callback(client, mqtt_incoming_publish_cb,
@@ -395,9 +407,12 @@ static void mqtt_connection_cb(mqtt_client_t *client, void *arg,
 				mqtt_sub_request_cb, arg);
 
 		if (err != ERR_OK) {
+#if( LOG_ENABLE == 1 )
 			printf(
 					"MQTT_SET_SETTINGS_TOPIC mqtt_connection_cb: mqtt_subscribe return: %d\n",
 					err);
+#endif /* LOG */
+
 			Error_Handler();
 		}
 
@@ -405,9 +420,11 @@ static void mqtt_connection_cb(mqtt_client_t *client, void *arg,
 				mqtt_sub_request_cb, arg);
 
 		if (err != ERR_OK) {
+#if( LOG_ENABLE == 1 )
 			printf(
 					"MQTT_SAVE_GESTURES_TOPIC mqtt_connection_cb: mqtt_subscribe return: %d\n",
 					err);
+#endif /* LOG */
 			Error_Handler();
 		}
 
@@ -415,9 +432,11 @@ static void mqtt_connection_cb(mqtt_client_t *client, void *arg,
 				mqtt_sub_request_cb, arg);
 
 		if (err != ERR_OK) {
+#if( LOG_ENABLE == 1 )
 			printf(
 					"MQTT_DELETE_GESTURES_TOPIC mqtt_connection_cb: mqtt_subscribe return: %d\n",
 					err);
+#endif /* LOG */
 			Error_Handler();
 		}
 
@@ -425,9 +444,11 @@ static void mqtt_connection_cb(mqtt_client_t *client, void *arg,
 				mqtt_sub_request_cb, arg);
 
 		if (err != ERR_OK) {
+#if( LOG_ENABLE == 1 )
 			printf(
 					"MQTT_PERFORM_GESTURE_ID_TOPIC mqtt_connection_cb: mqtt_subscribe return: %d\n",
 					err);
+#endif /* LOG */
 			Error_Handler();
 		}
 
@@ -435,9 +456,11 @@ static void mqtt_connection_cb(mqtt_client_t *client, void *arg,
 				mqtt_sub_request_cb, arg);
 
 		if (err != ERR_OK) {
+#if( LOG_ENABLE == 1 )
 			printf(
 					"MQTT_PERFORM_GESTURE_RAW_TOPIC mqtt_connection_cb: mqtt_subscribe return: %d\n",
 					err);
+#endif /* LOG */
 			Error_Handler();
 		}
 
@@ -445,14 +468,18 @@ static void mqtt_connection_cb(mqtt_client_t *client, void *arg,
 				mqtt_sub_request_cb, arg);
 
 		if (err != ERR_OK) {
+#if( LOG_ENABLE == 1 )
 			printf(
 					"MQTT_SET_POSITIONS_TOPIC mqtt_connection_cb: mqtt_subscribe return: %d\n",
 					err);
+#endif /* LOG */
 			Error_Handler();
 		}
 
 		if (xTimerStart( xOnlinePublishTimer, 500) == pdTRUE) {
+#if( LOG_ENABLE == 1 )
 			printf("mqtt_connection_cb: Start online publisher\n");
+#endif /* LOG */
 		}
 
 		// Публикуем в брокер, что мы онлайн в первый раз
@@ -461,7 +488,10 @@ static void mqtt_connection_cb(mqtt_client_t *client, void *arg,
 		// Оповещеняем основную таску, что клиент подключен
 		xSemaphoreGive(xSemaphoreMqttConnect);
 	} else {
+#if( LOG_ENABLE == 1 )
 		printf("mqtt_connection_cb: Disconnected, reason: %d\n", status);
+#endif /* LOG */
+
 		xSemaphoreTake(xSemaphoreMqttConnect, portMAX_DELAY);
 		/* Its more nice to be connected, so try to reconnect */
 		xTimerStop(xOnlinePublishTimer, portMAX_DELAY);
@@ -473,19 +503,25 @@ static void mqtt_sub_request_cb(void *arg, err_t result) {
 	/* Just print the result code here for simplicity,
 	 normal behaviour would be to take some action if subscribe fails like
 	 notifying user, retry subscribe or disconnect from server */
+#if( LOG_ENABLE == 1 )
 	printf("mqtt_sub_request_cb: subscribe result is %d\n", result);
+#endif /* LOG */
 }
 
 static void mqtt_incoming_publish_cb(void *arg, const char *topic,
 		u32_t tot_len) {
+#if( LOG_ENABLE == 1 )
 	printf("Incoming publish at topic %s with total length %u\n", topic,
 			(unsigned int) tot_len);
+#endif /* LOG */
 
 	// Очищаем предыдущий буфер, если он остался (такого быть по идее не должно, только если пропало соединение)
 	if (MQTTdataBuffer != NULL) {
+#if( LOG_ENABLE == 1 )
 		printf(
 				"Receive buffer is set for topic with id %s. Destroy receive buffer with length %d bytes\n",
 				lastTopicMQTT, buffer_lenght(MQTTdataBuffer));
+#endif /* LOG */
 		buffer_destroy(MQTTdataBuffer);
 		vPortFree(MQTTdataBuffer);
 		MQTTdataBuffer = NULL;
@@ -513,7 +549,10 @@ static void mqtt_incoming_publish_cb(void *arg, const char *topic,
 	}
 
 	// Создаем буффер для приема данных.
+#if( LOG_ENABLE == 1 )
 	printf("Create new receive buffer for topic %s\n", input_topic);
+#endif /* LOG */
+
 	MQTTdataBuffer = pvPortMalloc(sizeof(buffer_t));
 	buffer_init(MQTTdataBuffer, 0);
 }
@@ -536,8 +575,10 @@ static void mqtt_incoming_data_cb(void *arg, const u8_t *data, u16_t len,
 		/* Last fragment of payload received (or whole part if payload fits receive buffer
 		 See MQTT_VAR_HEADER_BUFFER_LEN)  */
 
+#if( LOG_ENABLE == 1 )
 		printf("Incoming publish payload with length %d, flags %u\n", len,
 				(unsigned int) flags);
+#endif /* LOG */
 
 		/* Call function or do action depending on reference, in this case inpub_id */
 		if (input_topic != NULL) {
@@ -557,7 +598,9 @@ static void mqtt_incoming_data_cb(void *arg, const u8_t *data, u16_t len,
 			// Оповещаем MQTT таску, что пришли новые данные.
 			xTaskNotifyGive(xTaskToNotifyMqttSendAndReceive);
 		} else {
+#if( LOG_ENABLE == 1 )
 			printf("mqtt_incoming_data_cb: Ignoring payload...\n");
+#endif /* LOG */
 		}
 	} else {
 		/* Handle fragmented payload, store in buffer, write to file or whatever */
@@ -577,16 +620,24 @@ void online_publish(mqtt_client_t *client, void *arg) {
 	u8_t retain = 0;
 	err = mqtt_publish(client, MQTT_ONLINE_TOPIC, MQTT_CLIENT_ID,
 			strlen(MQTT_CLIENT_ID), qos, retain, mqtt_pub_request_cb, arg);
+
+#if( LOG_ENABLE == 1 )
 	printf("online_publish: Send online status\n");
+#endif /* LOG */
+
 	if (err != ERR_OK) {
+#if( LOG_ENABLE == 1 )
 		printf("Publish online err: %d\n", err);
+#endif /* LOG */
 	}
 }
 
 /* Called when publish is complete either with sucess or failure */
 static void mqtt_pub_request_cb(void *arg, err_t result) {
 	if (result != ERR_OK) {
+#if( LOG_ENABLE == 1 )
 		printf("Publish result: %d\n", result);
+#endif /* LOG */
 	}
 }
 
@@ -620,24 +671,34 @@ void StartProtocolParserTask(void *pvParameters) {
 			ProtocolPackageStruct package;
 			ProtocolParser_PopPackage(&protocolParser, &package);
 
-			printf("[Parser] New protocol command received: %d (%u bytes)\n",
-					package.type, (unsigned int) package.size);
+			if (package.type != PROTOCOL_COMMAND_TELEMETRY)
+			{
+#if( LOG_ENABLE == 1 )
+				printf("[Parser] New protocol command received: %d (%u bytes)\n",
+						package.type, (unsigned int) package.size);
+#endif /* LOG */
+			}
 
 			// Телеметрию шлем напрямую
 			if (package.type == PROTOCOL_COMMAND_TELEMETRY) {
-				MQTT_Protocol_t mqttSendData;
+				if (xQueueMQTTSendMessage != NULL) {
+					MQTT_Protocol_t mqttSendData;
 
-				mqttSendData.topicName = MQTT_TELEMETRY_TOPIC;
-				mqttSendData.data = package.payload;
-				mqttSendData.dataLenght = package.size;
-				xQueueSend(xQueueMQTTSendMessage, &mqttSendData, portMAX_DELAY);
+					mqttSendData.topicName = MQTT_TELEMETRY_TOPIC;
+					mqttSendData.data = package.payload;
+					mqttSendData.dataLenght = package.size;
 
+					xQueueSend(xQueueMQTTSendMessage, &mqttSendData,
+							portMAX_DELAY);
+				}
 				// Оповещаем MQTT таску, что данные готовы.
 
-				if (isFirstTelemetry == true)
-				{
+				if (isFirstTelemetry == true) {
+#if( LOG_ENABLE == 1 )
 					printf("[Parser] First telemetry received\n");
-					xTaskNotifyGive(xTaskToNotifyTelemetryReceive);
+#endif /* LOG */
+
+					xSemaphoreGive(xSemaphoreProsthesisConnect);
 					isFirstTelemetry = false;
 				}
 
@@ -673,32 +734,53 @@ void StartDefaultTask(void const *argument) {
 	/* USER CODE BEGIN 5 */
 
 	// Initialize MQTT queue
-	xQueueMQTTSendMessage = xQueueCreate(qpeekQUEUE_LENGTH,
-			sizeof(MQTT_Protocol_t));
 	xQueueMQTTReceiveMessage = xQueueCreate(qpeekQUEUE_LENGTH,
 			sizeof(MQTT_Protocol_t));
 
+#if( LOG_ENABLE == 1 )
 	printf("[MQTT Task] Start MQTT\n");
+#endif /* LOG */
+
 	xTaskToNotifyMqttSendAndReceive = xTaskGetCurrentTaskHandle();
 	client = mqtt_client_new();
+
+	// Ожидаем подключения протеза
+#if( LOG_ENABLE == 1 )
+	printf("[MQTT Task] Wait Prosthesis connect\n");
+#endif /* LOG */
+
+	xSemaphoreTake(xSemaphoreProsthesisConnect, portMAX_DELAY);
+	xSemaphoreGive(xSemaphoreProsthesisConnect);
 	if (client != NULL) {
 		mqtt_connect(client);
 	} else {
+#if( LOG_ENABLE == 1 )
 		printf("Error creating MQTT client\n");
+#endif /* LOG */
 	}
 
 	configASSERT(client != NULL);
 
 	// Ожидаем пока MQTT клиент будет запущен
+#if( LOG_ENABLE == 1 )
 	printf("[MQTT Task] Wait MQTT client start\n");
+#endif /* LOG */
+
 	xSemaphoreTake(xSemaphoreMqttConnect, portMAX_DELAY);
+	xSemaphoreGive(xSemaphoreMqttConnect);
+
+	xQueueMQTTSendMessage = xQueueCreate(qpeekQUEUE_LENGTH,
+			sizeof(MQTT_Protocol_t));
+
+#if( LOG_ENABLE == 1 )
 	printf("[MQTT Task] Start receive MQTT data\n");
+#endif /* LOG */
 
 	/* Infinite loop */
 	for (;;) {
 
 		ulTaskNotifyTake(pdFALSE, portMAX_DELAY);
-		printf("[MQTT Task] start handle notification\n");
+		//printf("[MQTT Task] start handle notification\n");
 
 		// Смотрим очередь отправки на сервер
 		if (uxQueueMessagesWaiting(xQueueMQTTSendMessage)) {
@@ -706,24 +788,25 @@ void StartDefaultTask(void const *argument) {
 			if (xQueueReceive(xQueueMQTTSendMessage, &mqttSendData,
 					(TickType_t) 0) == pdPASS) {
 
-				printf(
-						"[MQTT Task] Required send new MQTT data (%u bytes) on topic `%s`\n",
-						(unsigned int) mqttSendData.dataLenght,
-						mqttSendData.topicName);
-
-				// Т.к. мы может уйти в реконнект на MQTT клиенте,
-				// то проверяем доступен ли клиент.
-				xSemaphoreTake(xSemaphoreMqttConnect, portMAX_DELAY);
-				xSemaphoreGive(xSemaphoreMqttConnect);
-				printf("[MQTT Task] client available\n");
+				if (strcmp(mqttSendData.topicName, MQTT_TELEMETRY_TOPIC) != 0)
+				{
+#if( LOG_ENABLE == 1 )
+					printf(
+							"[MQTT Task] Required send new MQTT data (%u bytes) on topic `%s`\n",
+							(unsigned int) mqttSendData.dataLenght,
+							mqttSendData.topicName);
+#endif /* LOG */
+				}
 
 				err_t err = mqtt_publish(client, mqttSendData.topicName,
 						mqttSendData.data, mqttSendData.dataLenght, 2, 0,
 						mqtt_pub_request_cb, 0);
 				if (err == ERR_OK) {
-					printf("[MQTT Task] Publish success\n");
+					//printf("[MQTT Task] Publish success\n");
 				} else {
+#if( LOG_ENABLE == 1 )
 					printf("[MQTT Task] Publish err: %d\n", err);
+#endif /* LOG */
 				}
 
 				vPortFree(mqttSendData.data);
@@ -736,10 +819,12 @@ void StartDefaultTask(void const *argument) {
 			if (xQueueReceive(xQueueMQTTReceiveMessage, &mqttReceiveData,
 					(TickType_t) 0) == pdPASS) {
 
+#if( LOG_ENABLE == 1 )
 				printf(
 						"[MQTT Task] Receive new data from topic %s with length: %u\n",
 						mqttReceiveData.topicName,
 						(unsigned int) mqttReceiveData.dataLenght);
+#endif /* LOG */
 
 				// Формируем пакет данных для отправки по UART
 				enum ProtocolCommandType type = PROTOCOL_COMMAND_EMPTY;
@@ -806,21 +891,55 @@ void StartUartTask(void const *argument) {
 
 	if (xReturned == pdPASS) {
 		/* The task was created. */
+#if( LOG_ENABLE == 1 )
 		printf("[UART Task] the protocol parser task was create\n");
+#endif /* LOG */
 	}
 
 	configASSERT(xReturned == pdPASS);
 
 	// Активируем прерывание UART.
 	HAL_UART_Receive_IT(&huart2, &uartRxData, 1);
+#if( LOG_ENABLE == 1 )
 	printf("[UART Task] start UART interrupt and receive data\n");
+#endif /* LOG */
 
-	// Ожидаем первого приходила телеметрии, чтобы понять, что протез подключен
-	ulTaskNotifyTake(pdFALSE, portMAX_DELAY);
+	// Ожидаем подключеия протеза.
+#if( LOG_ENABLE == 1 )
+	printf("[UART Task] Wait Prosthesis connect\n");
+#endif /* LOG */
+
+	xSemaphoreTake(xSemaphoreProsthesisConnect, portMAX_DELAY);
+	xSemaphoreGive(xSemaphoreProsthesisConnect);
+
+	// Ожидаем пока MQTT клиент будет запущен
+#if( LOG_ENABLE == 1 )
+	printf("[UART Task] Wait MQTT client start\n");
+#endif /* LOG */
+
+	xSemaphoreTake(xSemaphoreMqttConnect, portMAX_DELAY);
+	xSemaphoreGive(xSemaphoreMqttConnect);
+
+	// Запросы на GetSettings и GetGestures
+	ProtocolPackageStruct gesturesPackage = ProtocolParser_CreatePackage(PROTOCOL_COMMAND_GET_GESTURES, NULL, 0);
+	ProtocolPackageStruct settingsPackage = ProtocolParser_CreatePackage(PROTOCOL_COMMAND_GET_SETTINGS, NULL, 0);
+	xQueueSend(xQueueUARTSendMessage, &gesturesPackage, portMAX_DELAY);
+	xQueueSend(xQueueUARTSendMessage, &settingsPackage, portMAX_DELAY);
+
+#if( LOG_ENABLE == 1 )
+	printf("[UART Task] start receive data\n");
+#endif /* LOG */
 
 	for (;;) {
-		ulTaskNotifyTake(pdFALSE, portMAX_DELAY);
+		// Если очереди пусты, то ждем
+		if (!(uxQueueMessagesWaiting(xQueueUARTSendMessage) || uxQueueMessagesWaiting(xQueueUARTReceiveMessage)))
+		{
+			ulTaskNotifyTake(pdFALSE, portMAX_DELAY);
+		}
+
+#if( LOG_ENABLE == 1 )
 		printf("[UART Task] start handle notification\n");
+#endif /* LOG */
 
 		// Смотрим очередь отправки на протез
 		if (uxQueueMessagesWaiting(xQueueUARTSendMessage)) {
@@ -828,9 +947,11 @@ void StartUartTask(void const *argument) {
 			if (xQueueReceive(xQueueUARTSendMessage, &sendData,
 					(TickType_t) 0) == pdPASS) {
 
+#if( LOG_ENABLE == 1 )
 				printf(
 						"[UART Task] Required send new UART data (%u bytes), command %d\n",
 						(unsigned int) sendData.size, sendData.type);
+#endif /* LOG */
 
 				buffer_t package;
 				buffer_init(&package, ProtocolParser_GetCommonSize(&sendData));
@@ -843,19 +964,51 @@ void StartUartTask(void const *argument) {
 				ProtocolPackageStruct response;
 				if (xQueueReceive(xQueueUARTReceiveMessage, &response,
 						pdMS_TO_TICKS(5000)) != pdPASS) {
+#if( LOG_ENABLE == 1 )
 					printf("[UART Task] response timeout\n");
+#endif /* LOG */
 					continue;
 				}
 
 				if (response.type == PROTOCOL_COMMAND_ERR
 						|| response.type == PROTOCOL_COMMAND_EMPTY) {
+#if( LOG_ENABLE == 1 )
 					printf("[UART Task] response error\n");
+#endif /* LOG */
 					continue;
 				}
 
-				if (response.type != PROTOCOL_COMMAND_ACK) {
-					xQueueSend(xQueueUARTReceiveMessage, &response,
-							portMAX_DELAY);
+				if (response.type != PROTOCOL_COMMAND_ERR) {
+#if( LOG_ENABLE == 1 )
+					printf("[UART Task] Prosthesis send response\n");
+#endif /* LOG */
+
+					if (sendData.type == PROTOCOL_COMMAND_SAVE_GESTURES || sendData.type == PROTOCOL_COMMAND_DELETE_GESTURES)
+					{
+						xQueueSend(xQueueUARTSendMessage, &gesturesPackage, portMAX_DELAY);
+					}
+
+					if (sendData.type == PROTOCOL_COMMAND_SET_SETTINGS)
+					{
+						xQueueSend(xQueueUARTSendMessage, &settingsPackage, portMAX_DELAY);
+					}
+
+					if (response.type != PROTOCOL_COMMAND_ACK)
+					{
+#if( LOG_ENABLE == 1 )
+						printf("[UART Task] Response %d sending to uart receive queue\n", response.type);
+#endif /* LOG */
+
+						xQueueSend(xQueueUARTReceiveMessage, &response,
+								portMAX_DELAY);
+						// Оповещаем UART таску, что данные готовы.
+						xTaskNotifyGive(xTaskToNotifyUartSendAndReceive);
+					}
+				} else
+				{
+#if( LOG_ENABLE == 1 )
+					printf("[UART Task] Error response\n");
+#endif /* LOG */
 				}
 
 				vPortFree(sendData.payload);
@@ -868,30 +1021,39 @@ void StartUartTask(void const *argument) {
 			if (xQueueReceive(xQueueUARTReceiveMessage, &receiveData,
 					(TickType_t) 0) == pdPASS) {
 
-				continue;
-
+#if( LOG_ENABLE == 1 )
 				printf(
 						"[UART Task] Receive new data with length: %u bytes and command %d\n",
 						(unsigned int) receiveData.size, receiveData.type);
+#endif /* LOG */
 
 				MQTT_Protocol_t mqttSendData;
 
 				switch (receiveData.type) {
-				case PROTOCOL_COMMAND_TELEMETRY:
-					mqttSendData.topicName = MQTT_TELEMETRY_TOPIC;
+				case PROTOCOL_COMMAND_GET_GESTURES:
+					mqttSendData.topicName = MQTT_GET_GESTURES_TOPIC;
+					break;
+				case PROTOCOL_COMMAND_GET_SETTINGS:
+					mqttSendData.topicName = MQTT_GET_SETTINGS_TOPIC;
 					break;
 				default:
 					mqttSendData.topicName = NULL;
 					break;
 				}
+
 				configASSERT(mqttSendData.topicName);
 
-				mqttSendData.data = (uint8_t*) pvPortMalloc(32000);
-				mqttSendData.dataLenght = 32000;
-				xQueueSend(xQueueMQTTSendMessage, &mqttSendData, portMAX_DELAY);
+				mqttSendData.data = receiveData.payload;
+				mqttSendData.dataLenght = receiveData.size;
 
-				// Оповещаем MQTT таску, что данные готовы.
-				xTaskNotifyGive(xTaskToNotifyMqttSendAndReceive);
+				if (xQueueMQTTSendMessage != NULL)
+				{
+					xQueueSend(xQueueMQTTSendMessage, &mqttSendData, portMAX_DELAY);
+					// Оповещаем MQTT таску, что данные готовы.
+					xTaskNotifyGive(xTaskToNotifyMqttSendAndReceive);
+				}
+
+
 			}
 		}
 	}
